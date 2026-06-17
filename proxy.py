@@ -9,6 +9,8 @@ import os
 import signal
 import uuid
 import time
+import base64
+import re
 
 app = Flask(__name__)
 
@@ -849,6 +851,265 @@ def browser_ui():
     </script>
 </body>
 </html>'''
+    return html
+
+# === Playwright Video Extraction ===
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+def extract_video_url_filmix(page):
+    """Extract video URL from Filmix page using Playwright"""
+    try:
+        # Wait for the video element to have a src
+        page.wait_for_selector('video[src]', timeout=10000)
+        video = page.query_selector('video')
+        if video:
+            src = video.get_attribute('src')
+            if src and ('.mp4' in src or 'm3u8' in src):
+                return src
+    except Exception as e:
+        print(f"Filmix extraction error: {e}")
+    return None
+
+@app.route('/extract')
+def extract_video():
+    """Extract video URL from a page using Playwright browser"""
+    if not PLAYWRIGHT_AVAILABLE:
+        return {'error': 'Playwright not installed'}, 500
+    
+    url = request.args.get('url', '')
+    if not url:
+        return {'error': 'No URL provided'}, 400
+    
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            
+            page.goto(url, timeout=20000, wait_until='networkidle')
+            page.wait_for_timeout(3000)
+            
+            video_url = None
+            
+            # Try Filmix
+            if 'filmix' in url:
+                video_url = extract_video_url_filmix(page)
+            
+            # Try to find direct video/m3u8 in network requests
+            if not video_url:
+                def handle_response(response):
+                    nonlocal video_url
+                    if not video_url and any(x in response.url for x in ['.m3u8', '.mp4', 'manifest', 'playlist']):
+                        if response.url.endswith('.mp4') or '.m3u8' in response.url:
+                            video_url = response.url
+                page.on('response', handle_response)
+                page.wait_for_timeout(2000)
+            
+            browser.close()
+            
+            if video_url:
+                return {'video_url': video_url, 'status': 'ok'}
+            else:
+                return {'error': 'No video URL found', 'status': 'not_found'}, 404
+                
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+@app.route('/transcode')
+def transcode_video():
+    """Start transcoding a video URL for PS4.
+    
+    Args:
+        url: Direct video URL (mp4/m3u8)
+        page_url: Page URL to auto-extract video using Playwright (with cookies)
+    """
+    page_url = request.args.get('page_url', '')
+    video_url = request.args.get('url', '')
+    
+    if page_url:
+        # Auto-extract using Playwright with full browser context
+        page_url = unquote(page_url)
+        if not PLAYWRIGHT_AVAILABLE:
+            return {'error': 'Playwright not installed'}, 500
+        
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                
+                page.goto(page_url, timeout=20000, wait_until='networkidle')
+                page.wait_for_timeout(5000)
+                
+                # Get video URL from page
+                video_url = None
+                if 'filmix' in page_url:
+                    video_url = extract_video_url_filmix(page)
+                else:
+                    videos = page.query_selector_all('video[src]')
+                    if videos:
+                        video_url = videos[0].get_attribute('src')
+                
+                if not video_url:
+                    browser.close()
+                    return {'error': 'No video URL found on page'}, 404
+                
+                # Get cookies for the video domain
+                parsed = urlparse(video_url)
+                cookies = context.cookies([f"https://{parsed.netloc}/"])
+                cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
+                
+                browser.close()
+                
+                # Start transcode with cookies
+                return _start_transcode(video_url, cookie_str)
+                
+        except Exception as e:
+            return {'error': f'Playwright extraction failed: {str(e)}'}, 500
+    
+    elif video_url:
+        video_url = unquote(video_url)
+        return _start_transcode(video_url)
+    
+    return {'error': 'No URL provided'}, 400
+
+
+def _start_transcode(video_url, cookie_str=None):
+    """Internal: start ffmpeg transcode"""
+    stream_id = str(uuid.uuid4())[:8]
+    segment_dir = f"{STREAM_DIR}/{stream_id}"
+    os.makedirs(segment_dir, exist_ok=True)
+    playlist_path = f"{segment_dir}/playlist.m3u8"
+    
+    cmd = [
+        'ffmpeg',
+        '-re',
+        '-i', video_url,
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-profile:v', 'main',
+        '-level', '3.1',
+        '-pix_fmt', 'yuv420p',
+        '-b:v', '5000k',
+        '-maxrate', '6000k',
+        '-bufsize', '12000k',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '48000',
+        '-ac', '2',
+        '-f', 'hls',
+        '-hls_time', '2',
+        '-hls_list_size', '10',
+        '-hls_flags', 'delete_segments',
+        '-hls_segment_filename', f'{segment_dir}/segment_%03d.ts',
+        playlist_path
+    ]
+    
+    env = os.environ.copy()
+    if cookie_str:
+        env['HTTP_COOKIE'] = cookie_str
+    
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=env
+        )
+        
+        STREAMS[stream_id] = {
+            'process': proc,
+            'segment_dir': segment_dir,
+            'started': time.time(),
+            'video_url': video_url
+        }
+        
+        time.sleep(3)
+        
+        if proc.poll() is not None:
+            stderr = proc.stderr.read().decode('utf-8', errors='replace')
+            return {'error': 'FFmpeg failed', 'details': stderr[:500]}, 500
+        
+        return {
+            'stream_id': stream_id,
+            'hls_url': f'/hls/{stream_id}/playlist.m3u8',
+            'video_url': video_url,
+            'status': 'started'
+        }
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+@app.route('/hls/<stream_id>/<path:filename>')
+def serve_hls(stream_id, filename):
+    """Serve HLS segments"""
+    if stream_id not in STREAMS:
+        return 'Stream not found', 404
+    
+    segment_dir = STREAMS[stream_id]['segment_dir']
+    file_path = os.path.join(segment_dir, filename)
+    
+    if not os.path.exists(file_path):
+        return 'File not found', 404
+    
+    if filename.endswith('.m3u8'):
+        return Response(
+            open(file_path).read(),
+            mimetype='application/vnd.apple.mpegurl',
+            headers={'Cache-Control': 'no-cache'}
+        )
+    else:
+        return Response(
+            open(file_path, 'rb').read(),
+            mimetype='video/mp2t'
+        )
+
+@app.route('/hls/stop/<stream_id>')
+def stop_hls(stream_id):
+    """Stop a transcode stream"""
+    if stream_id in STREAMS:
+        proc = STREAMS[stream_id].get('process')
+        if proc:
+            try:
+                os.kill(proc.pid, signal.SIGTERM)
+            except:
+                pass
+        segment_dir = STREAMS[stream_id]['segment_dir']
+        subprocess.run(['rm', '-rf', segment_dir], capture_output=True)
+        del STREAMS[stream_id]
+        return {'status': 'stopped'}
+    return {'error': 'Stream not found'}, 404
+
+@app.route('/video-player')
+def video_player():
+    """Standalone video player page for PS4"""
+    video_url = request.args.get('url', '')
+    stream_id = request.args.get('stream_id', '')
+    
+    html = f'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920,height=1080">
+<title>Argentum Video</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+html, body {{ width: 1920px; height: 1080px; background: #000; }}
+video {{ width: 100%; height: 100%; object-fit: contain; }}
+</style>
+</head>
+<body>
+<video id="player" controls autoplay>
+'''
+    if stream_id:
+        html += f'<source src="/hls/{stream_id}/playlist.m3u8" type="application/x-mpegURL">'
+    elif video_url:
+        video_url_unquoted = unquote(video_url)
+        html += f'<source src="{video_url_unquoted}">'
+    html += '</video>\n</body>\n</html>'
     return html
 
 if __name__ == '__main__':

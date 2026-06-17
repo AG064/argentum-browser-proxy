@@ -1,67 +1,86 @@
 # Argentum Browser Proxy
 
-HTTP proxy with browser UI for PS4, with Cloudflare bypass and video transcoding.
-
-## Components
-
-| File | Port | Description |
-|------|------|-------------|
-| `proxy.py` | 8765 | Main HTTP proxy with Cloudflare bypass |
-| `browser_app.py` | 8765 | Full-screen browser UI for PS4 |
-| `stream_proxy.py` | 8766 | HLS/m3u8 stream transcoder |
+HTTP proxy with browser UI for PS4, with Cloudflare bypass, video extraction, and transcoding.
 
 ## Quick Start
 
 ```bash
-# Install dependencies
+cd /home/agx/AGX/argentum-browser-proxy
 pip install -r requirements.txt
-
-# Start proxy + browser UI
-./scripts/start.sh
-
-# Or start individually
-python3 proxy.py        # Proxy on :8765
-python3 browser_app.py # Browser UI on :8765 (冲突 if proxy runs)
-python3 stream_proxy.py # Stream proxy on :8766
+python3 proxy.py
 ```
 
-## Access
+Access: `http://YOUR_IP:8765/`
 
-- Browser UI: `http://YOUR_IP:8765/browser`
-- Proxy: `http://YOUR_IP:8765/`
-- Stream proxy: `http://YOUR_IP:8766/`
+## API Endpoints
 
-Default IP detected from `192.168.0.238` (see `VERSION.json`).
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Search interface |
+| `GET /browser` | PS4 browser UI |
+| `GET /browse?url=` | Proxy a URL through the proxy |
+| `GET /extract?url=` | Extract video URL from page using Playwright |
+| `GET /transcode?url=` | Transcode direct video URL to HLS |
+| `GET /transcode?page_url=` | Extract + transcode in one step (Playwright) |
+| `GET /hls/<id>/playlist.m3u8` | Serve HLS playlist |
+| `GET /hls/stop/<id>` | Stop transcode |
+| `GET /video-player?stream_id=` | Standalone video player page |
 
-## PS4 Setup
+## PS4 Browser Setup
 
-1. Go to PS4 browser, navigate to `http://YOUR_IP:8765/browser`
-2. Use the on-screen keyboard to enter URLs
-3. Videos are automatically transcoded for PS4 compatibility
+1. Go to PS4 browser, navigate to: `http://192.168.0.238:8765/browser`
+2. Navigate to any supported site
+3. Use `/transcode?page_url=` for automatic video extraction
 
-## PS4 Package Build
+## Supported Sites
 
-See `static/ps4_pkg_instructions.md` for creating a PS4 pkg file.
+| Site | Video Extraction | Transcode | Notes |
+|------|-----------------|-----------|-------|
+| filmix.my | ✅ Playwright | ✅ HLS/AAC | Best quality, auto-extract |
+| atomics.ws | ✅ Direct | ✅ HLS | Works well, some audio codec issues |
+| gidonline | ⚠️ YouTube embeds | ❌ | YouTube blocks PS4 |
+| hdrezka | ❌ AJAX | ❌ | Dynamic JS loading |
+| VK | ❌ Blocked | ❌ | Requires login |
+
+## Transcoding
+
+The transcode endpoint converts video to HLS with AAC audio for PS4 compatibility:
+
+```
+GET /transcode?page_url=https://filmix.my/play/9348
+```
+
+Returns:
+```json
+{
+  "stream_id": "b5064ec5",
+  "hls_url": "/hls/b5064ec5/playlist.m3u8",
+  "status": "started"
+}
+```
+
+Watch at: `http://YOUR_IP:8765/hls/b5064ec5/playlist.m3u8`
+
+Or use the player: `http://YOUR_IP:8765/video-player?stream_id=b5064ec5`
+
+Stop: `GET /hls/stop/b5064ec5`
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust if needed.
+Default IP: `192.168.0.238` (hardcoded in VERSION.json)
 
 ## Project Structure
 
 ```
 argentum-browser-proxy/
-├── proxy.py              # Main proxy (Cloudflare bypass)
-├── browser_app.py        # PS4 browser UI
-├── stream_proxy.py       # Video stream transcoder
-├── cloudflare.py         # Cloudflare bypass (Python)
-├── cloudflare.sh         # Cloudflare bypass (Shell + Node)
-├── cloudflare.js         # Cloudflare bypass (Node.js)
+├── proxy.py              # Main Flask app with all routes
+├── browser_app.py        # Standalone browser UI
+├── stream_proxy.py       # Stream proxy
+├── cloudflare.py/js/sh  # Cloudflare bypass
 ├── requirements.txt
-├── scripts/
-│   └── start.sh          # Start all services
-└── static/
-    ├── argentum.gp4      # GP4 project for PKG
-    ├── ps4_pkg_instructions.md
-    └── sce_sys.tar.gz   # PS4 system files
+├── README.md
+├── LICENSE (MIT)
+├── VERSION.json
+├── scripts/start.sh
+└── static/              # PS4 pkg build files
 ```
