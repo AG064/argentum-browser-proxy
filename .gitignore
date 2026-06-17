@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+node_modules/
+*.log
+cloudflare_cache/
+test-results/
+.DS_Store
+*.tar.gz
+!static/*.tar.gz

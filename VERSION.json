@@ -1,0 +1,6 @@
+{
+  "version": "1.0.0",
+  "build": "2026.06.15.001",
+  "url": "http://192.168.0.238:8765/browser",
+  "changelog": "Initial release with full browser UI, video transcoding, Cloudflare bypass"
+}
