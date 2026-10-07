@@ -6,13 +6,16 @@ import chardet
 import subprocess
 import json
 import os
+from pathlib import Path
+from path_security import contained_file, remove_stream_directory
 import signal
 import uuid
 import time
 import base64
 import re
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=None)
+STATIC_DIR = os.environ.get('ARGENTUM_PROXY_STATIC_DIR', os.path.join(os.path.dirname(__file__), 'static'))
 
 STREAM_DIR = '/tmp/hls_streams'
 os.makedirs(STREAM_DIR, exist_ok=True)
@@ -560,14 +563,14 @@ def hls_files(stream_id, filename):
         return 'Stream not found', 404
     
     segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = os.path.join(segment_dir, filename)
+    file_path = contained_file(segment_dir, filename, hls=True)
     
     if not os.path.exists(file_path):
         return 'File not found', 404
     
     if filename.endswith('.m3u8'):
         return Response(
-            open(file_path).read(),
+            Path(file_path).read_text(encoding='utf-8'),
             mimetype='application/vnd.apple.mpegurl',
             headers={'Cache-Control': 'no-cache'}
         )
@@ -614,7 +617,7 @@ def argentum_browser_file():
 @app.route('/static/<path:filename>')
 def serve_static(filename):
     """Serve static files for PS4 tools"""
-    static_file = f'/home/agx/.proxy/static/{filename}'
+    static_file = contained_file(STATIC_DIR, filename)
     if os.path.exists(static_file):
         return send_file(static_file)
     return 'File not found', 404
@@ -622,7 +625,7 @@ def serve_static(filename):
 @app.route('/download/pkg_tools')
 def download_pkg_tools():
     """Download PS4 PKG Tools package"""
-    tar_file = '/home/agx/.proxy/static/argentum_ps4_pkg_tools.tar.gz'
+    tar_file = contained_file(STATIC_DIR, 'argentum_ps4_pkg_tools.tar.gz')
     if os.path.exists(tar_file):
         return send_file(tar_file, as_attachment=True, download_name='argentum_ps4_pkg_tools.tar.gz')
     return 'File not found', 404
@@ -630,7 +633,7 @@ def download_pkg_tools():
 @app.route('/download/instructions')
 def download_instructions():
     """Download PKG build instructions"""
-    md_file = '/home/agx/.proxy/static/ps4_pkg_instructions.md'
+    md_file = contained_file(STATIC_DIR, 'ps4_pkg_instructions.md')
     if os.path.exists(md_file):
         return send_file(md_file, as_attachment=True, download_name='ps4_pkg_instructions.md')
     return 'File not found', 404
@@ -1050,20 +1053,20 @@ def serve_hls(stream_id, filename):
         return 'Stream not found', 404
     
     segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = os.path.join(segment_dir, filename)
+    file_path = contained_file(segment_dir, filename, hls=True)
     
     if not os.path.exists(file_path):
         return 'File not found', 404
     
     if filename.endswith('.m3u8'):
         return Response(
-            open(file_path).read(),
+            Path(file_path).read_text(encoding='utf-8'),
             mimetype='application/vnd.apple.mpegurl',
             headers={'Cache-Control': 'no-cache'}
         )
     else:
         return Response(
-            open(file_path, 'rb').read(),
+            Path(file_path).read_bytes(),
             mimetype='video/mp2t'
         )
 
@@ -1078,7 +1081,7 @@ def stop_hls(stream_id):
             except:
                 pass
         segment_dir = STREAMS[stream_id]['segment_dir']
-        subprocess.run(['rm', '-rf', segment_dir], capture_output=True)
+        remove_stream_directory(segment_dir, STREAM_DIR)
         del STREAMS[stream_id]
         return {'status': 'stopped'}
     return {'error': 'Stream not found'}, 404

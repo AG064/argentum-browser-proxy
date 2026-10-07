@@ -11,6 +11,8 @@ Features:
 from flask import Flask, request, Response, render_template_string, redirect
 from urllib.parse import quote, unquote
 import os
+from pathlib import Path
+from path_security import contained_file, remove_stream_directory
 import uuid
 import time
 import subprocess
@@ -603,20 +605,20 @@ def serve_hls(stream_id, filename):
         return 'Stream not found', 404
     
     segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = os.path.join(segment_dir, filename)
+    file_path = contained_file(segment_dir, filename, hls=True)
     
     if not os.path.exists(file_path):
         return 'File not found', 404
     
     if filename.endswith('.m3u8'):
         return Response(
-            open(file_path).read(),
+            Path(file_path).read_text(encoding='utf-8'),
             mimetype='application/vnd.apple.mpegurl',
             headers={'Cache-Control': 'no-cache'}
         )
     else:
         return Response(
-            open(file_path, 'rb').read(),
+            Path(file_path).read_bytes(),
             mimetype='video/mp2t'
         )
 

@@ -5,6 +5,8 @@ Converts any video to HLS stream that PS4 can play
 """
 import subprocess
 import os
+from pathlib import Path
+from path_security import contained_file, remove_stream_directory
 import signal
 import uuid
 import threading
@@ -64,7 +66,7 @@ def cleanup_stream(stream_id):
     # Remove segment files
     segment_dir = f"{STREAMS.get(stream_id, {}).get('segment_dir', '')}"
     if segment_dir and os.path.exists(segment_dir):
-        subprocess.run(['rm', '-rf', segment_dir], capture_output=True)
+        remove_stream_directory(segment_dir, STREAM_DIR)
 
 @app.route('/stream')
 def stream():
@@ -144,7 +146,7 @@ def hls_files(stream_id, filename):
         return {'error': 'Stream not found'}, 404
     
     segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = os.path.join(segment_dir, filename)
+    file_path = contained_file(segment_dir, filename, hls=True)
     
     if not os.path.exists(file_path):
         return {'error': 'File not found'}, 404
@@ -152,7 +154,7 @@ def hls_files(stream_id, filename):
     # Check if it's an m3u8 file
     if filename.endswith('.m3u8'):
         return Response(
-            open(file_path).read(),
+            Path(file_path).read_text(encoding='utf-8'),
             mimetype='application/vnd.apple.mpegurl',
             headers={'Cache-Control': 'no-cache'}
         )
