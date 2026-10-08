@@ -1,5 +1,7 @@
 from flask import Flask, request, Response, redirect, render_template_string, send_file
-from urllib.parse import quote, parse_qs, urlparse, unquote
+from urllib.parse import quote, urlparse, urljoin, urlsplit, urlunsplit, unquote
+from html import escape
+from web_security import validate_http_url, encode_form_target, decode_form_target, resolve_form_destination
 import requests
 from bs4 import BeautifulSoup
 import chardet
@@ -83,7 +85,7 @@ def make_request(url, headers=None, timeout=15, post_data=None):
         default_headers.update(headers)
     
     # Use POST if post_data is provided
-    if post_data:
+    if post_data is not None:
         resp = requests.post(url, headers=default_headers, data=post_data, timeout=timeout, allow_redirects=True)
     else:
         resp = requests.get(url, headers=default_headers, timeout=timeout, allow_redirects=True)
@@ -100,7 +102,7 @@ def make_request(url, headers=None, timeout=15, post_data=None):
             if user_agent:
                 default_headers['User-Agent'] = user_agent
             
-            if post_data:
+            if post_data is not None:
                 resp = requests.post(url, headers=default_headers, data=post_data, timeout=timeout, allow_redirects=True)
             else:
                 resp = requests.get(url, headers=default_headers, timeout=timeout, allow_redirects=True)
@@ -267,35 +269,57 @@ def search():
         
         return render_template_string(RESULTS_TEMPLATE, query=q, results=results, page=page)
     except Exception as e:
-        return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Error: {str(e)}</h2><a href="/">Back</a></body></html>'
+        return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Error: {escape(str(e))}</h2><a href="/">Back</a></body></html>'
 
 @app.route('/browse', methods=['GET', 'POST'])
 def browse():
+    if 'post' in request.args:
+        return 'Form data must be submitted in a POST body', 400
     url = request.args.get('url', '')
-    
-    # Handle POST from our JavaScript interceptor (form submitted via proxy)
-    post_raw = request.args.get('post', '')
-    if post_raw:
-        # Parse the post data from URL parameter
-        from urllib.parse import parse_qs
-        post_data = {k: v[0] for k, v in parse_qs(post_raw).items()}
-    elif request.method == 'POST' and request.form:
-        # Direct POST to /browse endpoint
-        post_data = dict(request.form)
-    else:
-        post_data = None
-    
     if not url:
         return redirect('/')
-    
     try:
-        resp = make_request(url, post_data=post_data)
+        validate_http_url(url)
+    except ValueError:
+        return 'A valid HTTP or HTTPS URL is required', 400
+    body = request.get_data() if request.method == 'POST' else None
+    return browse_url(url, body, request.content_type)
+
+@app.route('/submit/<target>', methods=['GET', 'POST'])
+def submit_form(target):
+    try:
+        url = decode_form_target(target)
+    except ValueError:
+        return 'Invalid form destination', 400
+    if request.method in ('GET', 'HEAD'):
+        parsed = urlsplit(url)
+        destination = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, request.query_string.decode('ascii'), ''))
+        return redirect('/browse?url=' + quote(destination, safe=''))
+    return browse_url(url, request.get_data(), request.content_type)
+
+def browse_url(url, post_data=None, content_type=None):
+    try:
+        resp = make_request(url, headers={'Content-Type': content_type} if post_data is not None and content_type else None, post_data=post_data)
         content_type = resp.headers.get('Content-Type', '')
         content = resp.content
         
         if 'text/html' in content_type:
             text, used_encoding = decode_content(content, content_type)
             soup = BeautifulSoup(text, 'html.parser')
+            document_url = getattr(resp, 'url', None) or url
+            base = soup.find('base', href=True)
+            base_href = base['href'] if base else None
+            try:
+                base_url = resolve_form_destination(document_url, None, base_href or '')
+            except ValueError:
+                base_url = document_url
+            target_base = soup.find('base', target=True)
+            if target_base:
+                for tag in soup.find_all(['form', 'a', 'area']):
+                    if not tag.has_attr('target'):
+                        tag['target'] = target_base['target']
+            for base in soup.find_all('base'):
+                base.decompose()
             
             # Set correct charset
             if soup.head:
@@ -303,20 +327,31 @@ def browse():
                 if meta:
                     meta['charset'] = 'utf-8'
             
-            for attr in ['src', 'href', 'action', 'data-src']:
+            for attr in ['src', 'href', 'data-src']:
                 for tag in soup.find_all(attrs={attr: True}):
                     val = tag[attr]
-                    if val.startswith('//'):
-                        val = 'https:' + val
-                    elif val.startswith('/'):
-                        parsed = requests.utils.urlparse(url)
-                        val = f"{parsed.scheme}://{parsed.netloc}{val}"
-                    elif val and not val.startswith('http'):
-                        parsed = requests.utils.urlparse(url)
-                        val = f"{parsed.scheme}://{parsed.netloc}/{val}"
+                    if not val or val.startswith('#'):
+                        continue
+                    val = urljoin(base_url, val)
                     if val and val.startswith('http'):
                         tag[attr] = f'/browse?url={quote(val)}'
             
+            # Preserve native form encoding, successful controls and submitter overrides.
+            for form in soup.find_all('form'):
+                action = form.get('action', '')
+                try:
+                    destination = resolve_form_destination(document_url, base_href, action)
+                    form['action'] = '/submit/' + encode_form_target(destination)
+                except ValueError:
+                    form['action'] = '/submit/invalid'
+            for control in soup.find_all(['button', 'input'], attrs={'formaction': True}):
+                action = control.get('formaction', '')
+                try:
+                    destination = resolve_form_destination(document_url, base_href, action)
+                    control['formaction'] = '/submit/' + encode_form_target(destination)
+                except ValueError:
+                    control['formaction'] = '/submit/invalid'
+
             for meta in soup.find_all('meta', attrs={'http-equiv': 'refresh'}):
                 content = meta.get('content', '')
                 if 'url=' in content.lower():
@@ -346,48 +381,6 @@ def browse():
             script = soup.new_tag('script')
             script.string = '''
                 document.addEventListener('DOMContentLoaded', function() {
-                    // Intercept form submissions
-                    document.addEventListener('submit', function(e) {
-                        var form = e.target;
-                        if (form.method && form.method.toLowerCase() === 'post') {
-                            e.preventDefault();
-                            var formData = new FormData(form);
-                            var params = new URLSearchParams();
-                            for (var pair of formData.entries()) {
-                                params.append(pair[0], pair[1]);
-                            }
-                            var action = form.action || window.location.href;
-                            if (!action.startsWith('http')) {
-                                action = window.location.origin + action;
-                            }
-                            window.location.href = '/browse?url=' + encodeURIComponent(action) + '&post=' + encodeURIComponent(params.toString());
-                        }
-                    });
-                    
-                    // Intercept search inputs
-                    document.addEventListener('keypress', function(e) {
-                        if (e.key === 'Enter') {
-                            var input = e.target;
-                            if (input.tagName === 'INPUT' && (input.type === 'search' || input.name === 'q' || input.name === 'query' || input.name === 'search')) {
-                                e.preventDefault();
-                                var value = input.value;
-                                var form = input.form;
-                                if (form && form.action) {
-                                    var action = form.action;
-                                    if (!action.startsWith('http')) {
-                                        action = window.location.origin + action;
-                                    }
-                                    if (action.includes('?')) {
-                                        action += '&' + input.name + '=' + encodeURIComponent(value);
-                                    } else {
-                                        action += '?' + input.name + '=' + encodeURIComponent(value);
-                                    }
-                                    window.location.href = '/browse?url=' + encodeURIComponent(action);
-                                }
-                            }
-                        }
-                    });
-                    
                     // Detect and handle video players
                     var videoButtons = [];
                     
@@ -457,7 +450,7 @@ def browse():
             if soup.head:
                 soup.head.append(script)
             
-            header = BeautifulSoup(f'''<div class="header"><a href="/">Home</a><a href="/browse?url={quote(url)}">Refresh</a><form method="get" action="/browse" style="display:inline"><input type="text" name="url" value="{url}"><button type="submit">Go</button></form></div>''', 'html.parser')
+            header = BeautifulSoup(f'''<div class="header"><a href="/">Home</a><a href="/browse?url={quote(url)}">Refresh</a><form method="get" action="/browse" style="display:inline"><input type="text" name="url" value="{escape(url, quote=True)}"><button type="submit">Go</button></form></div>''', 'html.parser')
             if soup.body:
                 soup.body.insert(0, header)
             
@@ -466,7 +459,7 @@ def browse():
             return Response(content, status=resp.status_code, headers={'Content-Type': content_type})
             
     except Exception as e:
-        return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Error: {str(e)}</h2><a href="/">Back</a></body></html>'
+        return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Error: {escape(str(e))}</h2><a href="/">Back</a></body></html>'
 
 @app.route('/watch')
 def watch():
@@ -527,7 +520,7 @@ def watch():
         
         if proc.poll() is not None:
             stderr = proc.stderr.read().decode('utf-8', errors='replace')
-            return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Transcoding failed</h2><pre>{stderr[:1000]}</pre><a href="/">Back</a></body></html>'
+            return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Transcoding failed</h2><pre>{escape(stderr[:1000])}</pre><a href="/">Back</a></body></html>'
         
         # Return HTML5 video player that plays HLS
         hls_url = f'/hls/{stream_id}/playlist.m3u8'
@@ -554,7 +547,7 @@ def watch():
         '''
         
     except Exception as e:
-        return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Error: {str(e)}</h2><a href="/">Back</a></body></html>'
+        return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Error: {escape(str(e))}</h2><a href="/">Back</a></body></html>'
 
 @app.route('/hls/<stream_id>/<path:filename>')
 def hls_files(stream_id, filename):
@@ -650,6 +643,11 @@ def version_info():
 def browser_ui():
     """Full browser interface for PS4 (inline version)"""
     home = request.args.get('home', 'https://www.google.com')
+    try:
+        validate_http_url(home)
+    except ValueError:
+        return 'A valid HTTP or HTTPS home URL is required', 400
+    home_json = json.dumps(home).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
     
     html = '''<!DOCTYPE html>
 <html>
@@ -711,7 +709,7 @@ def browser_ui():
         <button class="nav-btn" onclick="goBack()" title="Back">&#8592;</button>
         <button class="nav-btn" onclick="goForward()" title="Forward">&#8594;</button>
         <button class="nav-btn" onclick="goHome()" title="Home">&#8962;</button>
-        <input type="text" class="url-bar" id="urlBar" placeholder="Enter URL or search..." value="''' + home + '''">
+        <input type="text" class="url-bar" id="urlBar" placeholder="Enter URL or search..." value="''' + escape(home, quote=True) + '''">
         <button class="go-btn" onclick="navigate()">Go</button>
     </div>
     
@@ -750,12 +748,12 @@ def browser_ui():
 
     <script>
         var currentUrl = "";
-        var history = [];
+        var browserHistory = [];
         var historyIndex = -1;
         var currentStreamId = null;
         
         window.onload = function() {
-            currentUrl = "''' + home + '''";
+            currentUrl = ''' + home_json + ''';
             document.getElementById("urlBar").value = currentUrl;
             addToHistory(currentUrl);
             setTimeout(() => { document.getElementById("loading").classList.add("hidden"); }, 1500);
@@ -783,14 +781,14 @@ def browser_ui():
         }
         
         function addToHistory(url) {
-            if (historyIndex < history.length - 1) { history = history.slice(0, historyIndex + 1); }
-            history.push(url);
-            historyIndex = history.length - 1;
+            if (historyIndex < browserHistory.length - 1) { browserHistory = browserHistory.slice(0, historyIndex + 1); }
+            browserHistory.push(url);
+            historyIndex = browserHistory.length - 1;
         }
         
-        function goBack() { if (historyIndex > 0) { historyIndex--; loadURL(history[historyIndex]); } }
-        function goForward() { if (historyIndex < history.length - 1) { historyIndex++; loadURL(history[historyIndex]); } }
-        function goHome() { loadURL("''' + home + '''"); }
+        function goBack() { if (historyIndex > 0) { historyIndex--; loadURL(browserHistory[historyIndex]); } }
+        function goForward() { if (historyIndex < browserHistory.length - 1) { historyIndex++; loadURL(browserHistory[historyIndex]); } }
+        function goHome() { loadURL(''' + home_json + '''); }
         
         function detectVideos() {
             try {
@@ -1091,6 +1089,13 @@ def video_player():
     """Standalone video player page for PS4"""
     video_url = request.args.get('url', '')
     stream_id = request.args.get('stream_id', '')
+    if stream_id and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', stream_id):
+        return 'Invalid stream identifier', 400
+    if video_url:
+        try:
+            validate_http_url(video_url)
+        except ValueError:
+            return 'A valid HTTP or HTTPS media URL is required', 400
     
     html = f'''<!DOCTYPE html>
 <html>
@@ -1110,8 +1115,7 @@ video {{ width: 100%; height: 100%; object-fit: contain; }}
     if stream_id:
         html += f'<source src="/hls/{stream_id}/playlist.m3u8" type="application/x-mpegURL">'
     elif video_url:
-        video_url_unquoted = unquote(video_url)
-        html += f'<source src="{video_url_unquoted}">'
+        html += f'<source src="{escape(video_url, quote=True)}">'
     html += '</video>\n</body>\n</html>'
     return html
 

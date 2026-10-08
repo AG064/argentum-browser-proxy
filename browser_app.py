@@ -1,3 +1,4 @@
+from web_security import validate_http_url
 #!/usr/bin/env python3
 """
 Argentum Browser - Full browser interface for PS4
@@ -299,8 +300,8 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
-        var currentUrl = '{{ home_url }}';
-        var history = [currentUrl];
+        var currentUrl = {{ home_url | tojson }};
+        var browserHistory = [currentUrl];
         var historyIndex = 0;
         var currentStreamId = null;
         var isTranscoding = false;
@@ -342,12 +343,12 @@ MAIN_TEMPLATE = '''
             currentUrl = url;
             document.getElementById('urlBar').value = url;
             
-            // Add to history
-            if (historyIndex < history.length - 1) {
-                history = history.slice(0, historyIndex + 1);
+            // Add to browserHistory
+            if (historyIndex < browserHistory.length - 1) {
+                browserHistory = browserHistory.slice(0, historyIndex + 1);
             }
-            history.push(url);
-            historyIndex = history.length - 1;
+            browserHistory.push(url);
+            historyIndex = browserHistory.length - 1;
             
             // Detect videos after load
             setTimeout(() => {
@@ -359,19 +360,19 @@ MAIN_TEMPLATE = '''
         function goBack() {
             if (historyIndex > 0) {
                 historyIndex--;
-                loadURL(history[historyIndex]);
+                loadURL(browserHistory[historyIndex]);
             }
         }
         
         function goForward() {
-            if (historyIndex < history.length - 1) {
+            if (historyIndex < browserHistory.length - 1) {
                 historyIndex++;
-                loadURL(history[historyIndex]);
+                loadURL(browserHistory[historyIndex]);
             }
         }
         
         function goHome() {
-            loadURL('{{ home_url }}');
+            loadURL({{ home_url | tojson }});
         }
         
         // Video detection and handling
@@ -535,6 +536,10 @@ MAIN_TEMPLATE = '''
 def browser():
     """Main browser interface"""
     home = request.args.get('home', 'https://www.google.com')
+    try:
+        validate_http_url(home)
+    except ValueError:
+        return 'A valid HTTP or HTTPS home URL is required', 400
     return render_template_string(MAIN_TEMPLATE, home_url=home)
 
 @app.route('/browser/stream/start')

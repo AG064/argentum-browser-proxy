@@ -2,6 +2,16 @@
 
 HTTP proxy with browser UI for PS4, with Cloudflare bypass, video extraction, and transcoding.
 
+## Current security boundaries
+
+Proxy-owned pages encode supplied values for their HTML or JavaScript context. Rewritten forms use native GET or POST submission; POST fields and uploaded bytes remain in the body. Legacy GET requests containing a post payload are rejected. Local static/HLS file retrieval is constrained to its configured directory.
+
+Outbound destinations are still unrestricted, and transcoding services still accept unauthenticated requests without global job limits. These are unresolved security findings. Restrict access to trusted operators while deciding whether to retain the service with isolated network/process workers or disable its unsafe features. URL syntax checks do not provide network isolation.
+
+## Dependencies
+
+Use Python 3.10 or newer; checks use Python 3.12. The requirements file declares the tested minimum Flask, Requests, Beautiful Soup and chardet releases with major-version bounds. It is not a complete transitive lockfile. FFmpeg, Playwright and Chromium are optional external dependencies for extraction/transcoding, and the Cloudflare helper is resolved from the configured host installation. Their installed versions and host permissions have not been verified by the focused HTTP/UI checks.
+
 ## Quick Start
 
 ```bash
