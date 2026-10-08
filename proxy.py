@@ -1,3 +1,4 @@
+from resource_limits import JOB_BUDGET
 from flask import Flask, request, Response, redirect, render_template_string, send_file
 from urllib.parse import quote, urlparse, urljoin, urlsplit, urlunsplit, unquote
 from html import escape
@@ -19,9 +20,10 @@ import re
 app = Flask(__name__, static_folder=None)
 STATIC_DIR = os.environ.get('ARGENTUM_PROXY_STATIC_DIR', os.path.join(os.path.dirname(__file__), 'static'))
 
-STREAM_DIR = '/tmp/hls_streams'
+STREAM_DIR = str(JOB_BUDGET.database.parent / 'hls')
 os.makedirs(STREAM_DIR, exist_ok=True)
 STREAMS = {}
+JOB_BUDGET.install(app, ['watch', 'transcode_video', 'extract_video'])
 
 CLOUDFLARE_CACHE = {}
 
@@ -474,9 +476,8 @@ def watch():
         return redirect('/')
     
     video_url = unquote(video_url)
-    stream_id = str(uuid.uuid4())[:8]
-    segment_dir = f"{STREAM_DIR}/{stream_id}"
-    os.makedirs(segment_dir, exist_ok=True)
+    stream_id = uuid.uuid4().hex[:16]
+    segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     playlist_path = f"{segment_dir}/playlist.m3u8"
     
     # FFmpeg command for PS4 compatible HLS
@@ -506,22 +507,14 @@ def watch():
     ]
     
     try:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        
-        STREAMS[stream_id] = {
-            'process': proc,
-            'segment_dir': segment_dir,
-            'playlist': playlist_path,
-            'started': time.time(),
-            'url': video_url
-        }
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {'playlist': playlist_path, 'url': video_url})
         
         # Give ffmpeg time to start
         time.sleep(2)
         
         if proc.poll() is not None:
             stderr = proc.stderr.read().decode('utf-8', errors='replace')
-            return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Transcoding failed</h2><pre>{escape(stderr[:1000])}</pre><a href="/">Back</a></body></html>'
+            return f'<html><body style="background:#0a0a;color:#fff;padding:20px"><h2>Transcoding failed</h2><pre>{escape(stderr[:1000])}</pre><a href="/">Back</a></body></html>', 500
         
         # Return HTML5 video player that plays HLS
         hls_url = f'/hls/{stream_id}/playlist.m3u8'
@@ -552,32 +545,15 @@ def watch():
 
 @app.route('/hls/<stream_id>/<path:filename>')
 def hls_files(stream_id, filename):
-    """Serve HLS segments"""
-    if stream_id not in STREAMS:
-        return 'Stream not found', 404
-    
-    segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = contained_file(segment_dir, filename, hls=True)
-    
-    if not os.path.exists(file_path):
-        return 'File not found', 404
-    
-    if filename.endswith('.m3u8'):
-        return Response(
-            Path(file_path).read_text(encoding='utf-8'),
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Cache-Control': 'no-cache'}
-        )
-    else:
-        return send_file(file_path, mimetype='video/mp2t')
+    return JOB_BUDGET.serve_hls(STREAMS, stream_id, filename)
 
 @app.route('/stream/status/<stream_id>')
 def stream_status(stream_id):
     """Check stream status"""
-    if stream_id not in STREAMS:
+    info = JOB_BUDGET.snapshot(STREAMS, stream_id)
+    if info is None:
         return {'error': 'Stream not found'}, 404
-    
-    info = STREAMS[stream_id]
+
     proc = info.get('process')
     
     return {
@@ -589,14 +565,7 @@ def stream_status(stream_id):
 @app.route('/stream/stop/<stream_id>')
 def stream_stop(stream_id):
     """Stop a stream"""
-    if stream_id in STREAMS:
-        proc = STREAMS[stream_id].get('process')
-        if proc:
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-            except:
-                pass
-        del STREAMS[stream_id]
+    JOB_BUDGET.stop(STREAMS, stream_id)
     return {'status': 'stopped'}
 
 @app.route('/argentum_browser.html')
@@ -981,9 +950,8 @@ def transcode_video():
 
 def _start_transcode(video_url, cookie_str=None):
     """Internal: start ffmpeg transcode"""
-    stream_id = str(uuid.uuid4())[:8]
-    segment_dir = f"{STREAM_DIR}/{stream_id}"
-    os.makedirs(segment_dir, exist_ok=True)
+    stream_id = uuid.uuid4().hex[:16]
+    segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     playlist_path = f"{segment_dir}/playlist.m3u8"
     
     cmd = [
@@ -1016,19 +984,7 @@ def _start_transcode(video_url, cookie_str=None):
         env['HTTP_COOKIE'] = cookie_str
     
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            env=env
-        )
-        
-        STREAMS[stream_id] = {
-            'process': proc,
-            'segment_dir': segment_dir,
-            'started': time.time(),
-            'video_url': video_url
-        }
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {'video_url': video_url}, env=env)
         
         time.sleep(3)
         
@@ -1047,41 +1003,12 @@ def _start_transcode(video_url, cookie_str=None):
 
 @app.route('/hls/<stream_id>/<path:filename>')
 def serve_hls(stream_id, filename):
-    """Serve HLS segments"""
-    if stream_id not in STREAMS:
-        return 'Stream not found', 404
-    
-    segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = contained_file(segment_dir, filename, hls=True)
-    
-    if not os.path.exists(file_path):
-        return 'File not found', 404
-    
-    if filename.endswith('.m3u8'):
-        return Response(
-            Path(file_path).read_text(encoding='utf-8'),
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Cache-Control': 'no-cache'}
-        )
-    else:
-        return Response(
-            Path(file_path).read_bytes(),
-            mimetype='video/mp2t'
-        )
+    return JOB_BUDGET.serve_hls(STREAMS, stream_id, filename)
 
 @app.route('/hls/stop/<stream_id>')
 def stop_hls(stream_id):
     """Stop a transcode stream"""
-    if stream_id in STREAMS:
-        proc = STREAMS[stream_id].get('process')
-        if proc:
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-            except:
-                pass
-        segment_dir = STREAMS[stream_id]['segment_dir']
-        remove_stream_directory(segment_dir, STREAM_DIR)
-        del STREAMS[stream_id]
+    if JOB_BUDGET.stop(STREAMS, stream_id):
         return {'status': 'stopped'}
     return {'error': 'Stream not found'}, 404
 

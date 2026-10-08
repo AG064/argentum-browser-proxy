@@ -1,3 +1,4 @@
+from resource_limits import JOB_BUDGET
 from web_security import validate_http_url
 #!/usr/bin/env python3
 """
@@ -21,9 +22,10 @@ import signal
 
 app = Flask(__name__)
 
-STREAM_DIR = '/tmp/hls_browser'
+STREAM_DIR = str(JOB_BUDGET.database.parent / 'browser-hls')
 os.makedirs(STREAM_DIR, exist_ok=True)
 STREAMS = {}
+JOB_BUDGET.install(app, ['stream_start'])
 
 MAIN_TEMPLATE = '''
 <!DOCTYPE html>
@@ -550,9 +552,8 @@ def stream_start():
         return {'error': 'No URL provided'}, 400
     
     video_url = unquote(video_url)
-    stream_id = str(uuid.uuid4())[:8]
-    segment_dir = f"{STREAM_DIR}/{stream_id}"
-    os.makedirs(segment_dir, exist_ok=True)
+    stream_id = uuid.uuid4().hex[:16]
+    segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     playlist_path = f"{segment_dir}/playlist.m3u8"
     
     cmd = [
@@ -581,13 +582,7 @@ def stream_start():
     ]
     
     try:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        
-        STREAMS[stream_id] = {
-            'process': proc,
-            'segment_dir': segment_dir,
-            'started': time.time()
-        }
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {})
         
         time.sleep(2)
         
@@ -605,39 +600,12 @@ def stream_start():
 
 @app.route('/browser/hls/<stream_id>/<path:filename>')
 def serve_hls(stream_id, filename):
-    """Serve HLS segments"""
-    if stream_id not in STREAMS:
-        return 'Stream not found', 404
-    
-    segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = contained_file(segment_dir, filename, hls=True)
-    
-    if not os.path.exists(file_path):
-        return 'File not found', 404
-    
-    if filename.endswith('.m3u8'):
-        return Response(
-            Path(file_path).read_text(encoding='utf-8'),
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Cache-Control': 'no-cache'}
-        )
-    else:
-        return Response(
-            Path(file_path).read_bytes(),
-            mimetype='video/mp2t'
-        )
+    return JOB_BUDGET.serve_hls(STREAMS, stream_id, filename)
 
 @app.route('/browser/stream/stop/<stream_id>')
 def stream_stop(stream_id):
     """Stop a stream"""
-    if stream_id in STREAMS:
-        proc = STREAMS[stream_id].get('process')
-        if proc:
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-            except:
-                pass
-        del STREAMS[stream_id]
+    JOB_BUDGET.stop(STREAMS, stream_id)
     return {'status': 'stopped'}
 
 if __name__ == '__main__':

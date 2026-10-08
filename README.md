@@ -55,6 +55,37 @@ Access: `http://YOUR_IP:8765/`
 2. Navigate to any supported site
 3. Use `/transcode?page_url=` for automatic video extraction
 
+## Video job controls
+
+All five video-start routes share a SQLite admission budget before browser
+extraction or FFmpeg launch. The default namespace permits two active/preparing
+jobs and six total active or retained jobs. Excess requests return HTTP 503 with
+Retry-After. HEAD requests do not start jobs. Servers from the same checkout share
+the namespace; use the same ARGENTUM_PROXY_JOB_STATE_DIR for separate checkouts or
+worker deployments. It must be private and writable by the service account.
+
+FFmpeg uses bounded codec/filter thread counts and input read timeouts. While the
+owning server is running, a watchdog stops jobs after four hours or when observed
+output exceeds 128 MiB per job.
+Diagnostics are drained and retain at most 4 KiB. Finished HLS output remains for
+up to two minutes, within the six-record budget, so clients can finish reading.
+Stop, launch failure and expiry confirm process termination before removing owned
+output. Direct-stream replacements use separate output directories.
+
+Job state and new streams live beneath the private .runtime directory by default.
+Reservations remain fail-closed after an abrupt server crash; the application
+watchdog cannot supervise orphan processes after that crash. Do not remove the
+state database while workers are running. For recovery, stop every server sharing
+the namespace and verify that its FFmpeg processes have exited before clearing
+that namespace. Existing legacy output directories are not removed automatically.
+
+These are admission and lifecycle controls, with a sampled output threshold.
+They do not provide hard CPU/memory/descendant-process or aggregate disk quotas.
+Internet-facing use still requires authentication, OS-enforced worker limits and
+outbound network isolation. Redirects, browser subrequests and FFmpeg playlists
+can still reach unrestricted destinations. These two original findings remain
+partially or wholly open; no fully isolated deployment is claimed.
+
 ## Supported Sites
 
 | Site | Video Extraction | Transcode | Notes |

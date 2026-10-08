@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .env
 node_modules/
+.runtime/
 *.log
 cloudflare_cache/
 test-results/
