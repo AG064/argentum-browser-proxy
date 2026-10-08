@@ -3,8 +3,15 @@
 # Usage: ./cloudflare.sh <url>
 # Returns JSON with cookies and user agent
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NODE_DIR="/tmp/cf_temp"
+set -euo pipefail
 
-cd "$NODE_DIR"
-node cloudflare.js "$1" 2>/dev/null
+if [[ $# -ne 1 || -z "$1" ]]; then
+    printf '%s\n' 'Usage: cloudflare.sh <url>' >&2
+    exit 64
+fi
+
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
+[[ -f "$SCRIPT_DIR/cloudflare.js" && -r "$SCRIPT_DIR/cloudflare.js" ]]
+cd -- "$SCRIPT_DIR"
+exec node "$SCRIPT_DIR/cloudflare.js" "$1"

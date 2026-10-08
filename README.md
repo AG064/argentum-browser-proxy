@@ -10,7 +10,20 @@ Outbound destinations are still unrestricted, and transcoding services still acc
 
 ## Dependencies
 
-Use Python 3.10 or newer; checks use Python 3.12. The requirements file declares the tested minimum Flask, Requests, Beautiful Soup and chardet releases with major-version bounds. It is not a complete transitive lockfile. FFmpeg, Playwright and Chromium are optional external dependencies for extraction/transcoding, and the Cloudflare helper is resolved from the configured host installation. Their installed versions and host permissions have not been verified by the focused HTTP/UI checks.
+Use Python 3.10 or newer; checks use Python 3.12. The requirements file declares the tested minimum Flask, Requests, Beautiful Soup and chardet releases with major-version bounds. It is not a complete transitive lockfile. Optional Node Playwright is pinned to 1.62.1 and Python Playwright to its published 1.62.0 release. FFmpeg and the host's Chromium sandbox support remain external runtime requirements.
+
+The Cloudflare wrapper now selects cloudflare.js beside its own physical file. It never loads executable code from /tmp or the invocation directory. Existing installations using /tmp/cf_temp must install dependencies beside the repository helper:
+
+```bash
+# Run in the installed repository with Node 22.18 or newer.
+npm ci
+npx playwright install chromium --no-shell
+# Also install these when using Python extraction/bypass code.
+python3 -m pip install -r requirements-extract.txt
+python3 -m playwright install chromium --no-shell
+```
+
+Browser launches require Chromium's sandbox and retain normal web security. Run with a host account and kernel configuration that support it. Sandbox startup failures do not trigger an unsafe fallback. Linux host compatibility and real Cloudflare/PS4 behavior have not been verified by these checks.
 
 ## Quick Start
 

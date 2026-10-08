@@ -73,10 +73,11 @@ class CloudflareBypasser:
         p = await async_playwright().start()
         self.browser = await p.chromium.launch(
             headless=self.headless,
+            channel='chromium',
+            chromium_sandbox=True,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--disable-dev-shm-usage',
-                '--no-sandbox',
                 '--disable-gpu'
             ]
         )
@@ -103,12 +104,12 @@ class CloudflareBypasser:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=self.headless,
+                    channel='chromium',
+                    chromium_sandbox=True,
                     args=[
                         '--disable-blink-features=AutomationControlled',
                         '--disable-dev-shm-usage',
-                        '--no-sandbox',
                         '--disable-gpu',
-                        '--disable-web-security'
                     ]
                 )
                 

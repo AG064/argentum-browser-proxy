@@ -14,10 +14,11 @@ async function bypass() {
     
     const browser = await chromium.launch({ 
         headless: true,
+        channel: "chromium",
+        chromiumSandbox: true,
         args: [
             '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
-            '--no-sandbox',
             '--disable-gpu'
         ]
     });

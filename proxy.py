@@ -44,12 +44,13 @@ def bypass_cloudflare(url):
             return cached.get('cookies'), cached.get('user_agent')
     
     try:
+        helper = Path(__file__).resolve().with_name('cloudflare.sh')
         result = subprocess.run(
-            ['/home/agx/.proxy/cloudflare.sh', url],
+            [str(helper), url],
             capture_output=True,
             text=True,
             timeout=60,
-            cwd='/home/agx/.proxy'
+            cwd=str(helper.parent)
         )
         
         if result.returncode == 0 and result.stdout:
@@ -887,7 +888,7 @@ def extract_video():
     
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True)
             page = browser.new_page()
             
             page.goto(url, timeout=20000, wait_until='networkidle')
@@ -938,7 +939,7 @@ def transcode_video():
         
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True)
                 context = browser.new_context()
                 page = context.new_page()
                 
