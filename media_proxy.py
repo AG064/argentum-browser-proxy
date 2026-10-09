@@ -21,7 +21,12 @@ lock=threading.Lock()
 
 
 def encode(url):return base64.urlsafe_b64encode(url.encode()).decode().rstrip('=')
-def media_url(cap,url):return 'http://127.0.0.1:18890/'+cap+'/'+encode(validate_http_url(url))
+def media_url(cap,url):
+    url=validate_http_url(url)
+    suffix=Path(urlsplit(url).path).suffix.lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,10}',suffix):suffix='.bin'
+    # Retain extensions needed by the HLS demuxer's segment checks.
+    return 'http://127.0.0.1:18890/'+cap+'/'+encode(url)+'/media'+suffix
 
 
 class Registry(socketserver.StreamRequestHandler):
@@ -55,13 +60,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def transfer(self,head=False):
         self.close_connection=True
         try:
-            cap,encoded=self.path.lstrip('/').split('/',1)
+            cap,encoded,resource=self.path.lstrip('/').split('/',2)
             with lock:
                 entry=entries.get(cap)
                 if not entry or entry['expires']<=time.monotonic():raise ValueError('Unknown media job')
                 cookies=list(entry['cookies'])
             if len(encoded)>16384:raise ValueError('Invalid target')
             url=validate_http_url(base64.urlsafe_b64decode(encoded+'='*(-len(encoded)%4)).decode())
+            if resource!=media_url(cap,url).rsplit('/',1)[1]:raise ValueError('Invalid media resource')
             with ScopedSession() as session:
                 session.trust_env=False;session.max_redirects=8
                 session.cookies=requests_cookie_jar(cookies)
