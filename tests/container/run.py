@@ -20,6 +20,8 @@ try:
  else:raise RuntimeError('Worker boundary did not become ready')
  for mode in ['network','browser','descendants']:
   print(run(['docker','exec','--user','10001',worker,'python','/app/tests/container/probe.py',mode],timeout=150))
+ from api import validate_video_routes
+ validate_video_routes(root)
  fixture=run([*base,'ps','-q','fixtures'])
  metrics=json.loads(run(['docker','exec',fixture,'python','-c',
     "import urllib.request;print(urllib.request.urlopen('http://10.77.0.5/_metrics').read().decode())"]))

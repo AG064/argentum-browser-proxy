@@ -1,140 +1,42 @@
 # Argentum Browser Proxy
 
-HTTP proxy with browser UI for PS4, with Cloudflare bypass, video extraction, and transcoding.
+Authenticated public-web browsing, media extraction and H.264/AAC HLS for PS4 through a bounded Linux deployment.
 
-## Current security boundaries
+## Start
 
-Proxy-owned pages encode supplied values for their HTML or JavaScript context. Rewritten forms use native GET or POST submission; POST fields and uploaded bytes remain in the body. Legacy GET requests containing a post payload are rejected. Local static/HLS file retrieval is constrained to its configured directory.
-
-Outbound destinations are still unrestricted, and transcoding services still accept unauthenticated requests without global job limits. These are unresolved security findings. Restrict access to trusted operators while deciding whether to retain the service with isolated network/process workers or disable its unsafe features. URL syntax checks do not provide network isolation.
-
-## Dependencies
-
-Use Python 3.10 or newer; checks use Python 3.12. The requirements file declares the tested minimum Flask, Requests, Beautiful Soup and chardet releases with major-version bounds. It is not a complete transitive lockfile. Optional Node Playwright is pinned to 1.62.1 and Python Playwright to its published 1.62.0 release. FFmpeg and the host's Chromium sandbox support remain external runtime requirements.
-
-The Cloudflare wrapper now selects cloudflare.js beside its own physical file. It never loads executable code from /tmp or the invocation directory. Existing installations using /tmp/cf_temp must install dependencies beside the repository helper:
+Use Linux Docker Engine with Compose, cgroup v2 and a kernel supporting Chromium user namespaces. Generate private credentials for the host name or LAN IP you will open:
 
 ```bash
-# Run in the installed repository with Node 22.18 or newer.
-npm ci
-npx playwright install chromium --no-shell
-# Also install these when using Python extraction/bypass code.
-python3 -m pip install -r requirements-extract.txt
-python3 -m playwright install chromium --no-shell
+python3 deploy/bootstrap.py --host YOUR_LAN_IP
+ARGENTUM_BIND_IP=YOUR_LAN_IP docker compose up -d --build
 ```
 
-Browser launches require Chromium's sandbox and retain normal web security. Run with a host account and kernel configuration that support it. Sandbox startup failures do not trigger an unsafe fallback. Linux host compatibility and real Cloudflare/PS4 behavior have not been verified by these checks.
+Read the access code from the ignored deploy/private/access-code file. Trust the generated TLS certificate on your client or replace the certificate/key with a trusted certificate, then sign in at https://YOUR_LAN_IP:8765/login. Setup preserves existing files and prints no credential. Raw Python servers and helpers fail closed without the verified worker boundary.
 
-## Quick Start
+Port 8765 serves the main browser, 8767 the standalone browser, and 8788 the stream API. Published ports bind only to 127.0.0.1 unless ARGENTUM_BIND_IP is explicitly set. All access-code holders share one deployment. Native forms and HLS clients use Secure, HttpOnly, SameSiteStrict cookies lasting eight hours.
 
-```bash
-cd /home/agx/AGX/argentum-browser-proxy
-pip install -r requirements.txt
-python3 proxy.py
-```
+## Network boundary
 
-Access: `http://YOUR_IP:8765/`
+The worker installs default-deny IPv4/IPv6 firewalls before starting services. New connections can reach only the fixed egress broker TCP port. Direct TCP, UDP, DNS, loopback, host gateways and proxy fallback are blocked. Services run as UID 10001 without capabilities or new privileges; Chromium sandboxing remains enabled.
 
-## API Endpoints
+At each connection the broker validates all DNS answers, rejects non-public/mixed/scoped/transition addresses, and connects the exact numeric peer through an external route. Host addresses and local routes are rejected. HTTP forwarding and HTTPS CONNECT preserve bodies, Range and signed queries. Redirects, browser subrequests and FFmpeg secondary fetches cross this boundary. Public HTTP port 80 and HTTPS port 443 are supported. ARGENTUM_EGRESS_DENY_CIDRS can add exclusions for public ranges belonging to an operator's private deployment.
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Search interface |
-| `GET /browser` | PS4 browser UI |
-| `GET /browse?url=` | Proxy a URL through the proxy |
-| `GET /extract?url=` | Extract video URL from page using Playwright |
-| `GET /transcode?url=` | Transcode direct video URL to HLS |
-| `GET /transcode?page_url=` | Extract + transcode in one step (Playwright) |
-| `GET /hls/<id>/playlist.m3u8` | Serve HLS playlist |
-| `GET /hls/stop/<id>` | Stop transcode |
-| `GET /video-player?stream_id=` | Standalone video player page |
+A separate capability-protected connector queries the fixed host SearXNG search endpoint, bounds its JSON response and follows no redirects. It creates no general private-URL exception. Browsing localhost URLs is rejected.
 
-## PS4 Browser Setup
+Upstream documents use an opaque sandbox and URL-bound fetch capabilities. Native forms and rewritten resources work without management authority. Capabilities last at most five minutes, and descendants cannot renew that expiry. The browser's own Play video button uses reported media URLs that the worker validates. Submitted bodies are limited to 32 MiB and decoded responses to 64 MiB.
 
-1. Go to PS4 browser, navigate to: `http://192.168.0.238:8765/browser`
-2. Navigate to any supported site
-3. Use `/transcode?page_url=` for automatic video extraction
+## Resources and cleanup
 
-## Video job controls
+Expensive requests share two active/preparing slots and six active/retained records. Browser helpers and extraction have deadlines and bounded output capture. FFmpeg uses bounded codec threads and scoped cookies. Signed media URLs are not decoded twice.
 
-All five video-start routes share a SQLite admission budget before browser
-extraction or FFmpeg launch. The default namespace permits two active/preparing
-jobs and six total active or retained jobs. Excess requests return HTTP 503 with
-Retry-After. HEAD requests do not start jobs. Servers from the same checkout share
-the namespace; use the same ARGENTUM_PROXY_JOB_STATE_DIR for separate checkouts or
-worker deployments. It must be private and writable by the service account.
+The worker has hard aggregate limits of two CPUs, 1536 MiB memory with no swap, 256 PIDs and 1024 file descriptors. Its root filesystem is read-only. Writable runtime, temporary and shared-memory mounts are separately bounded at 256, 64 and 128 MiB, with inode caps. Broker/gateway resources and Docker logs are also bounded. Runtime checks reject missing limits.
 
-FFmpeg uses bounded codec/filter thread counts and input read timeouts. While the
-owning server is running, a watchdog stops jobs after four hours or when observed
-output exceeds 128 MiB per job.
-Diagnostics are drained and retain at most 4 KiB. Finished HLS output remains for
-up to two minutes, within the six-record budget, so clients can finish reading.
-Stop, launch failure and expiry confirm process termination before removing owned
-output. Direct-stream replacements use separate output directories.
+Job supervisors adopt and kill detached descendants. Server or supervisor failure exits the worker PID namespace. Stop and rollback retain ownership until termination and output cleanup are confirmed. Successful final HLS output remains for two minutes. Jobs also have a four-hour watchdog and observed 128 MiB output threshold, in addition to the hard mount quota. Playlists retain no-cache headers and segments retain Range support.
 
-Job state and new streams live beneath the private .runtime directory by default.
-Reservations remain fail-closed after an abrupt server crash; the application
-watchdog cannot supervise orphan processes after that crash. Do not remove the
-state database while workers are running. For recovery, stop every server sharing
-the namespace and verify that its FFmpeg processes have exited before clearing
-that namespace. Existing legacy output directories are not removed automatically.
+## Dependencies and verification
 
-These are admission and lifecycle controls, with a sampled output threshold.
-They do not provide hard CPU/memory/descendant-process or aggregate disk quotas.
-Internet-facing use still requires authentication, OS-enforced worker limits and
-outbound network isolation. Redirects, browser subrequests and FFmpeg playlists
-can still reach unrestricted destinations. These two original findings remain
-partially or wholly open; no fully isolated deployment is claimed.
+Docker bases are pinned by digest. The worker bundles Node 22 and Python 3.12. Node/Python Playwright share release 1.63.0 and the matching full Chromium. Waitress 3.0.2 serves the applications. Python bounds are not a complete transitive lockfile; rebuild against updated security packages and run the audits.
 
-## Supported Sites
+The vendored [Playwright seccomp policy](https://github.com/microsoft/playwright/blob/v1.63.0/utils/docker/seccomp_profile.json) adds pidfd operations for the supervisor and retains a default-deny syscall policy. Host IPC, SYS_ADMIN, disabled browser sandboxing and direct-network fallback are not used.
 
-| Site | Video Extraction | Transcode | Notes |
-|------|-----------------|-----------|-------|
-| filmix.my | ✅ Playwright | ✅ HLS/AAC | Best quality, auto-extract |
-| atomics.ws | ✅ Direct | ✅ HLS | Works well, some audio codec issues |
-| gidonline | ⚠️ YouTube embeds | ❌ | YouTube blocks PS4 |
-| hdrezka | ❌ AJAX | ❌ | Dynamic JS loading |
-| VK | ❌ Blocked | ❌ | Requires login |
-
-## Transcoding
-
-The transcode endpoint converts video to HLS with AAC audio for PS4 compatibility:
-
-```
-GET /transcode?page_url=https://filmix.my/play/9348
-```
-
-Returns:
-```json
-{
-  "stream_id": "b5064ec5",
-  "hls_url": "/hls/b5064ec5/playlist.m3u8",
-  "status": "started"
-}
-```
-
-Watch at: `http://YOUR_IP:8765/hls/b5064ec5/playlist.m3u8`
-
-Or use the player: `http://YOUR_IP:8765/video-player?stream_id=b5064ec5`
-
-Stop: `GET /hls/stop/b5064ec5`
-
-## Configuration
-
-Default IP: `192.168.0.238` (hardcoded in VERSION.json)
-
-## Project Structure
-
-```
-argentum-browser-proxy/
-├── proxy.py              # Main Flask app with all routes
-├── browser_app.py        # Standalone browser UI
-├── stream_proxy.py       # Stream proxy
-├── cloudflare.py/js/sh  # Cloudflare bypass
-├── requirements.txt
-├── README.md
-├── LICENSE (MIT)
-├── VERSION.json
-├── scripts/start.sh
-└── static/              # PS4 pkg build files
-```
+CI validates source/policy controls and the production images against offline DNS, HTTP, TLS and media fixtures. Physical PS4 playback and real provider availability remain deployment checks.

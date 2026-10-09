@@ -40,7 +40,11 @@ jobs:
       - run: python tests/container/run.py
       - name: Diagnostics
         if: failure()
-        run: docker compose logs --tail 80
+        run: |
+          docker compose ps -a
+          docker compose logs --tail 80
+          worker=$(docker compose ps -q worker)
+          if [ -n "$worker" ]; then docker exec --user 10001 "$worker" python /app/tests/container/debug_runtime.py || true; fi
       - name: Stop isolated services
         if: always()
         run: docker compose down
