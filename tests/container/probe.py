@@ -3,6 +3,7 @@ import hashlib
 import json
 import socket
 import sys
+sys.path.insert(0,'/app')
 from pathlib import Path
 import subprocess
 import os
@@ -47,6 +48,10 @@ def network():
         assert response.status_code==403,(host,response.status_code)
     response=client.get('http://public.fixture.test/redirect-private',timeout=5,allow_redirects=True)
     assert response.status_code==403
+    try:
+        client.get('http://public.fixture.test/redirect-bomb',timeout=5,allow_redirects=True)
+        raise AssertionError('Oversized redirect body bypassed the limit')
+    except ValueError:pass
     good=client.get('http://rebind.fixture.test/bytes',timeout=5,allow_redirects=True)
     bad=client.get('http://rebind.fixture.test/private',timeout=5,allow_redirects=True)
     assert good.status_code==200 and bad.status_code==403

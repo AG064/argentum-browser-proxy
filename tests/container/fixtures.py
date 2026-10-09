@@ -85,6 +85,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path=='/video/redirect-child':return self.reply(b'',status=302,headers=[('Location','https://child.public.fixture.test/video/movie.mp4')])
         if path=='/bytes':return self.reply(bytes(range(256))*4,'application/octet-stream')
         if path=='/gzip':return self.reply(gzip.compress(b'compressed fixture'),'text/plain',headers=[('Content-Encoding','gzip')])
+        if path=='/redirect-bomb':return self.reply(gzip.compress(b'x'*(65*1024*1024)),'text/plain',status=302,headers=[('Content-Encoding','gzip'),('Location','http://public.fixture.test/bytes')])
         if path=='/range':
             data=b'0123456789'
             if self.headers.get('Range')=='bytes=2-4':return self.reply(data[2:5],status=206,headers=[('Content-Range','bytes 2-4/10')])
