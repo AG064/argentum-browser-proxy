@@ -49,8 +49,8 @@ def dns_answer(data, source):
     return data[:2]+struct.pack('!HHHHH',0x8180,1,count,0,0)+data[12:end]+answers
 
 
-def dns_server():
-    server=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);server.bind(('0.0.0.0',53))
+def dns_server(address):
+    server=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);server.bind((address,53))
     while True:
         data,source=server.recvfrom(4096)
         try:server.sendto(dns_answer(data,source),source)
@@ -103,7 +103,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass
 
 
-threading.Thread(target=dns_server,daemon=True).start()
+for address in (public,private):
+    threading.Thread(target=dns_server,args=(address,),daemon=True).start()
 servers=[]
 for address in (public,private,'51.77.0.4'):
     server=http.server.ThreadingHTTPServer((address,80),Handler)
