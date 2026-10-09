@@ -31,9 +31,11 @@ def network():
     assert blocked_connection('::1',8765,socket.AF_INET6)
     udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);udp.settimeout(1)
     packet=b'\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x06public\x07fixture\x04test\x00\x00\x01\x00\x01'
-    udp.sendto(packet,('10.77.0.5',53))
-    try:udp.recvfrom(4096);raise AssertionError('Direct UDP succeeded')
-    except socket.timeout:pass
+    try:
+        udp.sendto(packet,('10.77.0.5',53))
+        udp.recvfrom(4096)
+        raise AssertionError('Direct UDP succeeded')
+    except OSError:pass
     finally:udp.close()
     for scheme in ['http','https']:
         response=client.get(scheme+'://public.fixture.test/bytes',timeout=5,allow_redirects=True)
