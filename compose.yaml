@@ -52,10 +52,11 @@ services:
     pids_limit: 64
     tmpfs: ['/run:rw,nosuid,nodev,noexec,size=4m,nr_inodes=1024', '/tmp:rw,nosuid,nodev,noexec,size=64m,nr_inodes=4096']
     volumes: [./deploy/private/tls.crt:/secrets/tls.crt:ro, ./deploy/private/tls.key:/secrets/tls.key:ro]
-    networks: {private: {ipv4_address: 10.77.0.4}}
+    networks: {private: {ipv4_address: 10.77.0.4}, ingress: {}}
     ports: ['${ARGENTUM_BIND_IP:-127.0.0.1}:8765:8765', '${ARGENTUM_BIND_IP:-127.0.0.1}:8767:8767', '${ARGENTUM_BIND_IP:-127.0.0.1}:8788:8788']
     logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
 networks:
+  ingress: {}
   private:
     internal: true
     ipam: {config: [{subnet: 10.77.0.0/28, gateway: 10.77.0.1}]}

@@ -13,7 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 public='51.78.0.4';private='10.77.0.5'
-state={'private_hits':0,'dns_worker_hits':0,'public_hits':0,'cookie_hosts':[],'paths':[]}
+state={'private_hits':0,'dns_worker_hits':0,'public_hits':0,'cookie_hosts':[],'cookie_leaks':0,'paths':[]}
 lock=threading.Lock();rebinding=0
 root=Path('/fixture');root.mkdir(exist_ok=True)
 # All media and credentials in this topology are synthetic.
@@ -75,8 +75,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 state['paths'].append(self.path)
                 if len(state['paths'])>100:state['paths'].pop(0)
                 if self.headers.get('Cookie'):state['cookie_hosts'].append(self.headers.get('Host'))
+                if 'private_session=' in self.headers.get('Cookie',''):
+                    if self.headers.get('Host')!='public.fixture.test' or not (path=='/video' or path.startswith('/video/')) or not isinstance(self.connection,ssl.SSLSocket):
+                        state['cookie_leaks']+=1
         if path=='/redirect-private':return self.reply(b'',status=302,headers=[('Location','http://private.fixture.test/private')])
         if path=='/redirect-public':return self.reply(b'',status=302,headers=[('Location','http://public.fixture.test/bytes')])
+        if path=='/video/redirect-other':return self.reply(b'',status=302,headers=[('Location','http://evilpublic.fixture.test/videox/movie.mp4')])
+        if path=='/video/redirect-path':return self.reply(b'',status=302,headers=[('Location','https://public.fixture.test/videox/movie.mp4')])
+        if path=='/video/redirect-child':return self.reply(b'',status=302,headers=[('Location','https://child.public.fixture.test/video/movie.mp4')])
         if path=='/bytes':return self.reply(bytes(range(256))*4,'application/octet-stream')
         if path=='/gzip':return self.reply(gzip.compress(b'compressed fixture'),'text/plain',headers=[('Content-Encoding','gzip')])
         if path=='/range':
@@ -87,7 +93,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             page=b'<html><body><video src="/movie.mp4?token=%252F"></video><script>fetch("http://private.fixture.test/private").catch(()=>{});new WebSocket("ws://private.fixture.test/socket");</script></body></html>'
             return self.reply(page,'text/html',headers=[('Set-Cookie','session=fixture; Path=/; HttpOnly')])
         if path=='/bad.m3u8':return self.reply(b'#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nhttp://private.fixture.test/private.ts\n#EXT-X-ENDLIST\n','application/vnd.apple.mpegurl')
-        if path=='/movie.mp4':return self.reply((root/'movie.mp4').read_bytes(),'video/mp4')
+        if path in ('/movie.mp4','/video/movie.mp4','/videox/movie.mp4'):return self.reply((root/'movie.mp4').read_bytes(),'video/mp4')
         if path=='/cookie':return self.reply(self.headers.get('Cookie','').encode())
         return self.reply(b'PRIVATE_FIXTURE' if self.server.server_address[0]==private else b'PUBLIC_FIXTURE')
     def do_POST(self):

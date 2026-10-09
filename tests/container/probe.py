@@ -105,5 +105,20 @@ def quotas():
         if created:path.unlink()
     print(json.dumps({'hard_runtime_quota':True}))
 
+
+def cookie_media():
+    import media_client
+    import requests
+    cookies=[dict(name='private_session',value='synthetic',domain='public.fixture.test',path='/video',secure=True,expires=-1)]
+    for path in ('redirect-other','redirect-path','redirect-child'):
+        registered=media_client.register('https://public.fixture.test/video/'+path,cookies)
+        try:
+            session=requests.Session();session.trust_env=False
+            response=session.get(registered['url'],timeout=15)
+            assert response.status_code==200 and response.content
+            session.close()
+        finally:media_client.unregister(registered['cap'])
+    print(json.dumps({'cookie_downgrade_suffix_subdomain_and_path_scoped':True}))
+
 if __name__=='__main__':
-    {'network':network,'browser':browser,'descendants':descendants,'quotas':quotas}[sys.argv[1]]()
+    {'network':network,'browser':browser,'descendants':descendants,'quotas':quotas,'cookie_media':cookie_media}[sys.argv[1]]()

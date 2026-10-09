@@ -18,7 +18,7 @@ try:
   if ready.returncode==0:break
   time.sleep(1)
  else:raise RuntimeError('Worker boundary did not become ready')
- for mode in ['network','browser','descendants','quotas']:
+ for mode in ['network','browser','descendants','quotas','cookie_media']:
   print(run(['docker','exec',worker,'setpriv','--reuid=10001','--regid=10001','--clear-groups','--bounding-set=-all','--no-new-privs','python','/app/tests/container/probe.py',mode],timeout=150))
  from api import validate_video_routes
  validate_video_routes(root)
@@ -27,6 +27,8 @@ try:
     "import urllib.request;print(urllib.request.urlopen('http://10.77.0.5/_metrics').read().decode())"]))
  assert metrics['private_hits']==0,metrics
  assert metrics['dns_worker_hits']==0,metrics
+ assert metrics['cookie_leaks']==0,metrics
+ assert not any(host.startswith(('evilpublic.fixture.test','child.public.fixture.test')) for host in metrics['cookie_hosts']),metrics
  print(json.dumps({'forbidden_fixture_hits':0,'direct_dns_hits':0,'global_fixture_requests':metrics['public_hits']}))
  # A killed service must cause the supervisor/PID namespace to exit.
  result=run(['docker','exec',worker,'setpriv','--reuid=10001','--regid=10001','--clear-groups','--bounding-set=-all','--no-new-privs','python','-c',

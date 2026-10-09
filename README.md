@@ -17,9 +17,9 @@ Port 8765 serves the main browser, 8767 the standalone browser, and 8788 the str
 
 ## Network boundary
 
-The worker installs default-deny IPv4/IPv6 firewalls before starting services. New connections can reach only the fixed egress broker TCP port. Direct TCP, UDP, DNS, loopback, host gateways and proxy fallback are blocked. Services run as UID 10001 without capabilities or new privileges; Chromium sandboxing remains enabled.
+The worker installs default-deny IPv4/IPv6 firewalls before starting services. New connections can reach only the fixed egress broker TCP port. Direct TCP, UDP, DNS, host gateways and proxy fallback are blocked. The only loopback fetch listener is a capability-protected per-job media transport; other loopback services remain blocked. Services run as UID 10001 without capabilities or new privileges; Chromium sandboxing remains enabled.
 
-At each connection the broker validates all DNS answers, rejects non-public/mixed/scoped/transition addresses, and connects the exact numeric peer through an external route. Host addresses and local routes are rejected. HTTP forwarding and HTTPS CONNECT preserve bodies, Range and signed queries. Redirects, browser subrequests and FFmpeg secondary fetches cross this boundary. Public HTTP port 80 and HTTPS port 443 are supported. ARGENTUM_EGRESS_DENY_CIDRS can add exclusions for public ranges belonging to an operator's private deployment.
+At each connection the broker validates all DNS answers, rejects non-public/mixed/scoped/transition addresses, and connects the exact numeric peer through an external route. Host addresses, connected subnets and specific routes are rejected; only the external default route is permitted. HTTP forwarding and HTTPS CONNECT preserve bodies, Range and signed queries. Redirects, browser subrequests and FFmpeg secondary fetches cross this boundary. Public HTTP port 80 and HTTPS port 443 are supported. ARGENTUM_EGRESS_DENY_CIDRS can add exclusions for public ranges belonging to an operator's private deployment.
 
 A separate capability-protected connector queries the fixed host SearXNG search endpoint, bounds its JSON response and follows no redirects. It creates no general private-URL exception. Browsing localhost URLs is rejected.
 
@@ -27,7 +27,7 @@ Upstream documents use an opaque sandbox and URL-bound fetch capabilities. Nativ
 
 ## Resources and cleanup
 
-Expensive requests share two active/preparing slots and six active/retained records. Browser helpers and extraction have deadlines and bounded output capture. FFmpeg uses bounded codec threads and scoped cookies. Signed media URLs are not decoded twice.
+Expensive requests share two active/preparing slots and six active/retained records. Browser helpers and extraction have deadlines and bounded output capture. FFmpeg uses bounded codec threads. Cookie-bearing inputs pass through the private per-job media transport, whose HTTP client preserves Secure, host-only, domain and path scope across redirects; FFmpeg does not receive cookie credentials. Signed media URLs are not decoded twice.
 
 The worker has hard aggregate limits of two CPUs, 1536 MiB memory with no swap, 256 PIDs and 1024 file descriptors. Its root filesystem is read-only. Writable runtime, temporary and shared-memory mounts are separately bounded at 256, 64 and 128 MiB, with inode caps. Broker/gateway resources and Docker logs are also bounded. Runtime checks reject missing limits.
 
