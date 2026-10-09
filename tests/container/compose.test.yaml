@@ -3,6 +3,7 @@ services:
     build: {context: ., dockerfile: deploy/Dockerfile, target: worker}
     entrypoint: [python, /app/tests/container/topology.py]
     cap_add: [NET_ADMIN]
+    depends_on: [router]
     networks: {private: {ipv4_address: 10.77.0.2}, internet_fixture: {ipv4_address: 51.77.0.2}}
   broker:
     network_mode: service:topology
@@ -16,9 +17,18 @@ services:
   fixtures:
     build: {context: ., dockerfile: deploy/Dockerfile, target: worker}
     entrypoint: [python, /app/tests/container/fixtures.py]
-    networks: {private: {ipv4_address: 10.77.0.5}, internet_fixture: {ipv4_address: 51.77.0.4}}
+    networks: {private: {ipv4_address: 10.77.0.5}, internet_fixture: {ipv4_address: 51.77.0.4}, public_fixture: {ipv4_address: 51.78.0.4}}
     volumes: [./tests/container/private/provider.crt:/secrets/provider.crt:ro, ./tests/container/private/provider.key:/secrets/provider.key:ro]
+  router:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: worker}
+    entrypoint: [python, /app/tests/container/router.py]
+    cap_add: [NET_ADMIN]
+    sysctls: {net.ipv4.ip_forward: '1'}
+    networks: {internet_fixture: {ipv4_address: 51.77.0.254}, public_fixture: {ipv4_address: 51.78.0.254}}
 networks:
   internet_fixture:
     internal: true
     ipam: {config: [{subnet: 51.77.0.0/24, gateway: 51.77.0.1}]}
+  public_fixture:
+    internal: true
+    ipam: {config: [{subnet: 51.78.0.0/24, gateway: 51.78.0.1}]}

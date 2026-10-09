@@ -64,6 +64,9 @@ def route_source(address):
     family = '-6' if address.version == 6 else '-4'
     defaults = ip_command(family, 'route', 'show', 'default')
     interfaces = {row['dev'] for row in defaults if row.get('dev') and row.get('type', 'unicast') == 'unicast'}
+    matching = ip_command(family, 'route', 'show', 'match', str(address))
+    if any(row.get('dst', 'default') not in ('default', '0.0.0.0/0', '::/0') for row in matching):
+        raise DestinationDenied('Connected and specific routes are not allowed')
     route = ip_command(family, 'route', 'get', str(address))
     if len(route) != 1 or route[0].get('type', 'unicast') != 'unicast' or route[0].get('dev') not in interfaces:
         raise DestinationDenied('Destination does not use the external route')

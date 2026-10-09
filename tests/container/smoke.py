@@ -11,7 +11,7 @@ session=requests.Session();session.trust_env=False
 base='https://127.0.0.1:8765'
 container=subprocess.check_output(['docker','compose','ps','-q','worker'],cwd=root,text=True).strip()
 for attempt in range(30):
-    probe=subprocess.run(['docker','exec','--user','10001',container,'python','-c',
+    probe=subprocess.run(['docker','exec',container,'setpriv','--reuid=10001','--regid=10001','--clear-groups','--bounding-set=-all','--no-new-privs','python','-c',
         'import isolation_runtime;print(isolation_runtime.require_isolation()["version"])'],capture_output=True,text=True)
     if probe.returncode==0:break
     time.sleep(1)
@@ -33,7 +33,7 @@ cookie=response.headers['Set-Cookie']
 assert all(item in cookie for item in ('Secure','HttpOnly','SameSite=Strict'))
 assert session.get(base+'/browser',verify=certificate,timeout=5).status_code==200
 container=subprocess.check_output(['docker','compose','ps','-q','worker'],cwd=root,text=True).strip()
-probe=subprocess.run(['docker','exec','--user','10001',container,'python','-c',
+probe=subprocess.run(['docker','exec',container,'setpriv','--reuid=10001','--regid=10001','--clear-groups','--bounding-set=-all','--no-new-privs','python','-c',
     'import isolation_runtime;print(isolation_runtime.require_isolation()["version"])'],capture_output=True,text=True)
 assert probe.returncode==0,probe.stderr
 assert probe.stdout.strip()=='1'

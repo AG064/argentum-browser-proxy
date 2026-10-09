@@ -21,6 +21,8 @@ def firewall(table, broker, gateway):
     if table == 'iptables':
         command(table, '-A', 'OUTPUT', '-p', 'tcp', '-d', broker, '--dport', '3128', '-m', 'conntrack', '--ctstate', 'NEW', '-j', 'ACCEPT')
         command(table, '-A', 'INPUT', '-p', 'tcp', '-s', gateway, '-m', 'multiport', '--dports', '8765,8767,8788', '-m', 'conntrack', '--ctstate', 'NEW', '-j', 'ACCEPT')
+        command(table, '-A', 'OUTPUT', '-o', 'lo', '-p', 'tcp', '--dport', '18890', '-j', 'ACCEPT')
+        command(table, '-A', 'INPUT', '-i', 'lo', '-p', 'tcp', '--dport', '18890', '-j', 'ACCEPT')
     saved = subprocess.check_output([table+'-save']).decode()
     if ':OUTPUT DROP' not in saved or ':INPUT DROP' not in saved:
         raise RuntimeError('Firewall verification failed')

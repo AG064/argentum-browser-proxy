@@ -16,7 +16,7 @@ import egress_broker as broker
 import deployment_access as access
 import fetch_tickets as tickets
 import isolation_runtime as runtime
-from cookie_security import cookie_header, requests_cookie_jar, ffmpeg_cookies
+from cookie_security import cookie_header, requests_cookie_jar
 from outbound import ScopedSession
 
 
@@ -52,7 +52,7 @@ class PolicyTests(unittest.TestCase):
         connection.bind.assert_called_once_with(('51.77.0.2',0))
 
     def test_local_route_and_host_addresses_are_denied(self):
-        cases = [[{'dev':'eth0'}],[{'dev':'lo','type':'local','prefsrc':'51.77.0.2'}]]
+        cases = [[{'dev':'eth0'}],[],[{'dev':'lo','type':'local','prefsrc':'51.77.0.2'}]]
         with patch.object(broker,'ip_command',side_effect=cases):
             with self.assertRaises(broker.DestinationDenied):
                 broker.route_source(__import__('ipaddress').ip_address('51.77.0.2'))
@@ -163,14 +163,44 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(cookie_header(cookies,'https://public.test/video/movie'),'session=fixture')
         for url in ['https://other.test/video','https://public.test/videox','http://public.test/video']:
             self.assertEqual(cookie_header(cookies,url),'')
-        self.assertIn('domain=public.test',ffmpeg_cookies(cookies,'https://public.test/video'))
         session=ScopedSession();session.cookies=requests_cookie_jar(cookies)
         own=session.prepare_request(requests.Request('GET','https://public.test/video'))
         child=session.prepare_request(requests.Request('GET','https://child.public.test/video'))
         self.assertEqual(own.headers.get('Cookie'),'session=fixture')
         self.assertNotIn('Cookie',child.headers)
+        wrong_path=session.prepare_request(requests.Request('GET','https://public.test/videox'))
+        downgrade=session.prepare_request(requests.Request('GET','http://public.test/video'))
+        suffix=session.prepare_request(requests.Request('GET','https://evilpublic.test/video'))
+        for prepared in (wrong_path,downgrade,suffix):self.assertNotIn('Cookie',prepared.headers)
         session.close()
 
     def test_malformed_cookie_state_is_rejected(self):
         with self.assertRaises(ValueError):
             cookie_header([dict(name='session',value='x\r\nHeader: injected',domain='public.test')],'https://public.test/')
+
+    def test_cookie_media_uses_the_scoped_fetch_service(self):
+        command=['ffmpeg','-i','https://public.test/video','output.m3u8']
+        cookies=[dict(name='session',value='fixture',domain='public.test',path='/video',secure=True,expires=-1)]
+        with patch.object(runtime,'require_isolation',return_value={'proxy':'http://broker:3128'}):
+            with patch('media_client.register',return_value={'url':'http://127.0.0.1:18890/cap/media','cap':'cap'}) as registered:
+                prepared=runtime.ffmpeg_options(command,cookies)
+        registered.assert_called_once_with(command[2],cookies)
+        self.assertEqual(prepared.media_cap,'cap')
+        self.assertEqual(prepared[prepared.index('-i')+1],'http://127.0.0.1:18890/cap/media')
+        self.assertNotIn('-cookies',prepared)
+
+    def test_every_redirect_body_is_limited_before_following(self):
+        from outbound import limit_response
+        response=unittest.mock.Mock()
+        response.iter_content.return_value=iter([b'x'*(64*1024*1024),b'x'])
+        with self.assertRaises(ValueError):limit_response(response)
+        response.close.assert_called_once()
+
+
+class RouteTests(unittest.TestCase):
+    def test_connected_and_specific_routes_on_default_interface_are_denied(self):
+        import ipaddress
+        for prefix in ['51.77.0.0/24','51.77.0.4/32']:
+            replies=[[{'dev':'eth0','gateway':'51.77.0.1'}],[{'dst':prefix,'dev':'eth0'}]]
+            with patch.object(broker,'ip_command',side_effect=replies):
+                with self.assertRaises(broker.DestinationDenied):broker.route_source(ipaddress.ip_address('51.77.0.4'))

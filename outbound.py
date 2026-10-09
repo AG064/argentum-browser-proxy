@@ -27,22 +27,13 @@ class HTTPTransport:
         with ScopedSession() as session:
             session.trust_env = False
             session.max_redirects = 8
+            session.hooks['response'].append(limit_response)
             cookies = kwargs.pop('cookies', None)
             if cookies:
                 session.cookies = requests_cookie_jar(cookies)
             response = session.request(method, url, proxies=runtime.proxies(), stream=True,
                                        verify='/etc/ssl/certs/ca-certificates.crt', **kwargs)
-            content = bytearray()
-            try:
-                for chunk in response.iter_content(65536):
-                    if len(content)+len(chunk) > 64*1024*1024:
-                        raise ValueError('Response exceeds the64 MiB limit')
-                    content.extend(chunk)
-                response._content = bytes(content)
-                response._content_consumed = True
-                return response
-            finally:
-                response.close()
+            return response
 
     def get(self, url, **kwargs):
         return self.request('GET', url, **kwargs)
@@ -50,6 +41,19 @@ class HTTPTransport:
     def post(self, url, **kwargs):
         return self.request('POST', url, **kwargs)
 
+
+def limit_response(response, *args, **kwargs):
+    content = bytearray()
+    try:
+        for chunk in response.iter_content(65536):
+            if len(content)+len(chunk) > 64*1024*1024:
+                raise ValueError('Response exceeds the64 MiB limit')
+            content.extend(chunk)
+        response._content = bytes(content)
+        response._content_consumed = True
+        return response
+    finally:
+        response.close()
 
 def search(query, offset):
     marker = runtime.require_isolation()

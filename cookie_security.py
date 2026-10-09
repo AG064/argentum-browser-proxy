@@ -38,11 +38,6 @@ def cookie_header(cookies, url):
     return '; '.join(c['name']+'='+c['value'] for c in matching_cookies(cookies, url))
 
 
-def ffmpeg_cookies(cookies, url):
-    return '\n'.join(c['name']+'='+c['value']+'; path='+c.get('path', '/')+'; domain='+c['domain']+';'
-                     for c in matching_cookies(cookies, url))
-
-
 def requests_cookie_jar(cookies):
     import http.cookiejar
     import requests

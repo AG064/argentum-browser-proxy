@@ -80,12 +80,17 @@ def guarded_command(command, seconds):
 
 def ffmpeg_options(command, cookies=None):
     from web_security import validate_http_url
-    from cookie_security import ffmpeg_cookies
     position = command.index('-i')
     url = validate_http_url(command[position+1])
+    if cookies:
+        from media_client import register, PreparedCommand
+        registered = register(url, cookies)
+        prepared = PreparedCommand(command)
+        prepared[position+1] = registered['url']
+        prepared[position:position] = ['-protocol_whitelist', 'http,tcp,crypto,data']
+        prepared.media_cap = registered['cap']
+        return prepared
     options = ['-protocol_whitelist', 'http,https,tcp,tls,crypto,data',
                '-http_proxy', require_isolation()['proxy'],
                '-tls_verify', '1', '-ca_file', '/etc/ssl/certs/ca-certificates.crt']
-    if cookies:
-        options += ['-cookies', ffmpeg_cookies(cookies, url)]
     return command[:position]+options+command[position:]

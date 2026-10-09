@@ -12,7 +12,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-public='51.77.0.4';private='10.77.0.5'
+public='51.78.0.4';private='10.77.0.5'
 state={'private_hits':0,'dns_worker_hits':0,'public_hits':0,'cookie_hosts':[],'paths':[]}
 lock=threading.Lock();rebinding=0
 root=Path('/fixture');root.mkdir(exist_ok=True)
@@ -34,8 +34,10 @@ def dns_answer(data, source):
     if name=='console.fixture.test':addresses=[private.replace('.5','.4')]
     elif name=='private.fixture.test':addresses=[private]
     elif name=='mixed.fixture.test':addresses=[public,private]
+    elif name=='connected.fixture.test':addresses=['51.77.0.4']
     elif name=='rebind.fixture.test':
-        rebinding+=1;addresses=[public if rebinding==1 else private]
+        if kind==1:rebinding+=1
+        addresses=[public if rebinding==1 else private]
     elif name=='local.fixture.test':addresses=['51.77.0.2']
     elif name=='loopback.fixture.test':addresses=['127.0.0.1']
     elif name.endswith('.fixture.test'):addresses=[public]
@@ -67,7 +69,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path=urlsplit(self.path).path
         if path=='/_metrics':return self.reply(json.dumps(state).encode(),'application/json')
         with lock:
-            if self.server.server_address[0]==private:state['private_hits']+=1
+            if self.server.server_address[0]in (private,'51.77.0.4'):state['private_hits']+=1
             else:
                 state['public_hits']+=1
                 state['paths'].append(self.path)
@@ -96,7 +98,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 threading.Thread(target=dns_server,daemon=True).start()
 servers=[]
-for address in (public,private):
+for address in (public,private,'51.77.0.4'):
     server=http.server.ThreadingHTTPServer((address,80),Handler)
     servers.append(server);threading.Thread(target=server.serve_forever,daemon=True).start()
 server=http.server.ThreadingHTTPServer((public,443),Handler)

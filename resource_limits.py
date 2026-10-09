@@ -20,7 +20,6 @@ import isolation_runtime as runtime
 from flask import g, has_request_context, Response, send_file
 from path_security import remove_stream_directory, contained_file
 from werkzeug.exceptions import NotFound
-from cookie_security import ffmpeg_cookies
 
 
 class JobCapacityError(RuntimeError):
@@ -211,6 +210,7 @@ class JobBudget:
                 arguments[arguments.index('-i'):arguments.index('-i')] = ['-threads', '2', '-rw_timeout', '15000000']
                 arguments[-1:-1] = ['-threads', '2']
                 arguments = runtime.ffmpeg_options(arguments, cookies)
+                info['media_cap'] = getattr(arguments, 'media_cap', None)
                 arguments = runtime.guarded_command(arguments, self.max_seconds)
                 supervised = len(arguments) > 1 and Path(arguments[1]).name == 'process_guard.py'
                 process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
@@ -251,6 +251,9 @@ class JobBudget:
                 directory = Path(info['segment_dir'])
                 if directory.exists():
                     remove_stream_directory(directory, entry['root'])
+                if info.get('media_cap'):
+                    from media_client import unregister
+                    unregister(info['media_cap'])
                 self.release(lease)
             except (OSError, ValueError, subprocess.TimeoutExpired, sqlite3.Error):
                 raise JobCapacityError('Stream cleanup is not confirmed; retry later') from None

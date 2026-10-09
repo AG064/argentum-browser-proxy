@@ -5,6 +5,8 @@ import socket
 import sys
 from pathlib import Path
 import subprocess
+import os
+os.environ.pop('HOME',None)
 import isolation_runtime as runtime
 from outbound import client
 from job_tools import run_guarded
@@ -24,7 +26,7 @@ def network():
     assert blocked_connection('10.77.0.5',80)
     assert blocked_connection('127.0.0.1',8765)
     assert blocked_connection('10.77.0.1',8888)
-    assert blocked_connection('51.77.0.4',80)
+    assert blocked_connection('51.78.0.4',80)
     assert blocked_connection('::1',8765,socket.AF_INET6)
     udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);udp.settimeout(1)
     packet=b'\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x06public\x07fixture\x04test\x00\x00\x01\x00\x01'
@@ -40,7 +42,7 @@ def network():
     assert response.content==b'a=one&a=two&empty='
     partial=client.get('http://public.fixture.test/range',headers={'Range':'bytes=2-4'},timeout=5,allow_redirects=True)
     assert partial.status_code==206 and partial.content==b'234'
-    for host in ['private.fixture.test','loopback.fixture.test','mixed.fixture.test','local.fixture.test','127.1','2130706433','169.254.169.254']:
+    for host in ['private.fixture.test','loopback.fixture.test','mixed.fixture.test','local.fixture.test','connected.fixture.test','127.1','2130706433','169.254.169.254']:
         response=client.get('http://'+host+'/private',timeout=5,allow_redirects=True)
         assert response.status_code==403,(host,response.status_code)
     response=client.get('http://public.fixture.test/redirect-private',timeout=5,allow_redirects=True)
@@ -76,7 +78,7 @@ def browser():
 
 
 def descendants():
-    script="import os,time;pid=os.fork();\nif pid==0:\n os.setsid();open('/runtime/detached.pid','w').write(str(os.getpid()));time.sleep(60)"
+    script="import os,time;pid=os.fork();\nif pid==0:\n os.setsid();open('/runtime/detached.pid','w').write(str(os.getpid()));time.sleep(60)\nelse:\n while not os.path.exists('/runtime/detached.pid'):time.sleep(.01)"
     result=run_guarded([sys.executable,'-c',script],seconds=2)
     assert result.returncode==0
     pid=int(Path('/runtime/detached.pid').read_text())
@@ -84,5 +86,24 @@ def descendants():
     print(json.dumps({'detached_descendants_reaped':True}))
 
 
+
+
+def quotas():
+    runtime.require_isolation()
+    path=Path('/runtime/quota-probe.bin')
+    created=False
+    try:
+        with path.open('xb') as stream:
+            created=True
+            written=0
+            while True:
+                try:stream.write(b'x'*(4*1024*1024));stream.flush();written+=4*1024*1024
+                except OSError:break
+                assert written <=256*1024*1024
+        assert written <256*1024*1024
+    finally:
+        if created:path.unlink()
+    print(json.dumps({'hard_runtime_quota':True}))
+
 if __name__=='__main__':
-    {'network':network,'browser':browser,'descendants':descendants}[sys.argv[1]]()
+    {'network':network,'browser':browser,'descendants':descendants,'quotas':quotas}[sys.argv[1]]()

@@ -22,6 +22,7 @@ def main():
     signal.signal(signal.SIGINT, stop)
     processes = [subprocess.Popen([sys.executable, '/app/deploy/serve.py', module, str(port)])
                  for module,port in [('proxy',8765), ('browser_app',8767), ('stream_proxy',8788)]]
+    processes.append(subprocess.Popen([sys.executable, '/app/media_proxy.py']))
     while not stopping and all(process.poll() is None for process in processes):
         time.sleep(0.2)
     # Namespace PID1 exits after this process; the kernel kills all descendants.
