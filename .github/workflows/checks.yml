@@ -1,0 +1,50 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=low
+      - run: node --check cloudflare.js
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - run: python -m unittest discover -s tests -v
+  isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python deploy/bootstrap.py --host 127.0.0.1
+      - run: docker compose build
+      - run: docker compose up -d
+      - run: python tests/container/smoke.py
+      - run: docker compose down
+      - run: python tests/container/generate_fixtures.py
+      - run: docker build --build-arg WORKER_IMAGE=argentum-browser-proxy-worker -f tests/container/Test.Dockerfile -t argentum-browser-proxy-worker-fixture .
+      - run: python tests/container/run.py
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail 80
+          worker=$(docker compose ps -q worker)
+          if [ -n "$worker" ]; then docker exec --user 10001 "$worker" python /app/tests/container/debug_runtime.py || true; fi
+      - name: Stop isolated services
+        if: always()
+        run: docker compose down

@@ -1,3 +1,9 @@
+import isolation_runtime as isolated_runtime
+from web_security import validate_http_url
+from job_tools import run_guarded
+from resource_limits import JOB_BUDGET
+import hashlib
+import sys
 #!/usr/bin/env python3
 """
 Cloudflare bypasser using Playwright
@@ -12,14 +18,15 @@ from typing import Optional, Dict, Any
 
 class CloudflareBypasser:
     def __init__(self, headless: bool = True):
+        isolated_runtime.require_isolation()
         self.headless = headless
         self.browser = None
         self.context = None
-        self.cache_dir = Path("/home/agx/.proxy/cloudflare_cache")
-        self.cache_dir.mkdir(exist_ok=True)
+        self.cache_dir = Path("/runtime/cache/cloudflare")
+        self.cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     
     def _get_cache_path(self, domain: str) -> Path:
-        return self.cache_dir / f"{domain.replace('.', '_')}.json"
+        return self.cache_dir / (hashlib.sha256(domain.encode()).hexdigest()+".json")
     
     def _is_cache_valid(self, domain: str, max_age: int = 3600) -> bool:
         """Check if cached cookies are still valid (less than max_age seconds old)"""
@@ -71,24 +78,31 @@ class CloudflareBypasser:
         from playwright.async_api import async_playwright
         
         p = await async_playwright().start()
-        self.browser = await p.chromium.launch(
-            headless=self.headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox',
-                '--disable-gpu'
-            ]
-        )
+        options = isolated_runtime.browser_options()
+        options['headless'] = self.headless
+        self.browser = await p.chromium.launch(**options)
         return p
     
-    async def bypass(self, url: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
+    async def bypass(self, url: str, timeout: int = 30):
+        url = validate_http_url(url)
+        lease = JOB_BUDGET.reserve()
+        try:
+            command = [sys.executable, str(Path(__file__).resolve()), '--worker', url, str(min(timeout, 45))]
+            if not self.headless:
+                command.append('--headed')
+            result = await asyncio.to_thread(run_guarded, command, seconds=60)
+            return json.loads(result.stdout) if result.returncode == 0 else None
+        finally:
+            JOB_BUDGET.release(lease)
+
+    async def _bypass_browser(self, url: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
         """
         Bypass Cloudflare challenge and return cookies + user agent
         """
         from urllib.parse import urlparse
+        url = validate_http_url(url)
         parsed = urlparse(url)
-        domain = parsed.netloc
+        domain = parsed.hostname
         
         # Check cache first
         if self._is_cache_valid(domain):
@@ -101,16 +115,9 @@ class CloudflareBypasser:
             from playwright.async_api import async_playwright
             
             async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=self.headless,
-                    args=[
-                        '--disable-blink-features=AutomationControlled',
-                        '--disable-dev-shm-usage',
-                        '--no-sandbox',
-                        '--disable-gpu',
-                        '--disable-web-security'
-                    ]
-                )
+                options = isolated_runtime.browser_options()
+                options['headless'] = self.headless
+                browser = await p.chromium.launch(**options)
                 
                 context = await browser.new_context(
                     user_agent='Mozilla/5.0 (Playwright) AppleWebKit/537.36'
@@ -154,7 +161,7 @@ class CloudflareBypasser:
                             break
                 
                 # Get cookies
-                cookies = await context.cookies()
+                cookies = await context.cookies([page.url])
                 user_agent = await context.tracking_protection.get_analytics_context() if hasattr(context, 'tracking_protection') else None
                 
                 if not user_agent:
@@ -191,12 +198,25 @@ def get_bypassed_session(url: str, timeout: int = 30) -> Optional[Dict[str, Any]
     return bypasser.get_session(url)
 
 
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1:
-        result = get_bypassed_session(sys.argv[1])
-        if result:
-            print(f"Success! Got {len(result['cookies'])} cookies")
-            print(f"User-Agent: {result['user_agent']}")
-        else:
-            print("Failed to bypass Cloudflare")
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--worker', action='store_true')
+    parser.add_argument('--headed', action='store_true')
+    parser.add_argument('url')
+    parser.add_argument('timeout', type=int, nargs='?', default=30)
+    arguments = parser.parse_args()
+    bypasser = CloudflareBypasser(headless=not arguments.headed)
+    if arguments.worker:
+        async def perform():
+            return await bypasser._bypass_browser(arguments.url, max(1, min(arguments.timeout, 45)))
+        # Diagnostics stay on stderr; stdout carries only bounded JSON.
+        import contextlib
+        with contextlib.redirect_stdout(sys.stderr):
+            result = asyncio.run(perform())
+        serialized = json.dumps(result)
+        if len(serialized.encode()) > 65536:
+            sys.exit(1)
+        print(serialized)
+    else:
+        print(json.dumps(asyncio.run(bypasser.bypass(arguments.url, arguments.timeout))))

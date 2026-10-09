@@ -1,3 +1,4 @@
+import { launchOptions } from './browser_runtime.js';
 import { chromium } from 'playwright';
 
 const url = process.argv[2] || process.argv[1];
@@ -8,19 +9,15 @@ if (!url) {
 
 const parsed = new URL(url);
 const domain = parsed.hostname;
+if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('HTTP or HTTPS URL required');
+}
 
 async function bypass() {
     console.error(`[Cloudflare] Bypassing challenge for ${domain}`);
     
-    const browser = await chromium.launch({ 
-        headless: true,
-        args: [
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--no-sandbox',
-            '--disable-gpu'
-        ]
-    });
+    const browser = await chromium.launch(launchOptions());
+
     
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -53,7 +50,7 @@ async function bypass() {
         }
         
         // Get cookies
-        const cookies = await context.cookies();
+        const cookies = await context.cookies([page.url()]);
         
         const result = {
             success: true,
@@ -71,11 +68,13 @@ async function bypass() {
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         };
         
-        console.log(JSON.stringify(result));
+        const serialized = JSON.stringify(result);
+        if (Buffer.byteLength(serialized) > 65536) throw new Error('Cookie result exceeds limit');
+        console.log(serialized);
         
     } catch (e) {
-        console.error(`[Cloudflare] Error: ${e.message}`);
-        console.log(JSON.stringify({ success: false, error: e.message }));
+        console.error('[Cloudflare] Browser challenge failed');
+        console.log(JSON.stringify({ success: false, error: "Browser challenge failed" }));
     } finally {
         await browser.close();
     }

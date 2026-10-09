@@ -1,0 +1,62 @@
+services:
+  broker:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: broker}
+    network_mode: host
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.5
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    ulimits: {nofile: {soft: 1024, hard: 1024}, core: 0}
+    tmpfs: ['/run:rw,nosuid,nodev,noexec,size=4m,nr_inodes=1024', '/tmp:rw,nosuid,nodev,noexec,size=8m,nr_inodes=1024']
+    volumes: [./deploy/private/access-code:/secrets/access-code:ro]
+    environment: {ARGENTUM_BROKER_BIND: 10.77.0.1, ARGENTUM_WORKER_IP: 10.77.0.3}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  worker:
+    build: {context: ., dockerfile: deploy/Dockerfile, target: worker}
+    depends_on: [broker]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, CHOWN, DAC_OVERRIDE, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true, 'seccomp:./deploy/seccomp.json']
+    cpus: 2
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 256
+    ulimits: {nofile: {soft: 1024, hard: 1024}, core: 0}
+    tmpfs:
+      - /run:rw,nosuid,nodev,noexec,size=4m,nr_inodes=1024
+      - /runtime:rw,nosuid,nodev,size=256m,nr_inodes=8192,mode=0700
+      - /tmp:rw,nosuid,nodev,size=64m,nr_inodes=4096,uid=10001,gid=10001,mode=0700
+      - /dev/shm:rw,nosuid,nodev,noexec,size=128m,nr_inodes=4096,uid=10001,gid=10001,mode=0700
+    volumes: [./deploy/private/access-code:/secrets/access-code:ro]
+    networks: {private: {ipv4_address: 10.77.0.3}}
+    environment: {ARGENTUM_BROKER_IP: 10.77.0.1, ARGENTUM_GATEWAY_IP: 10.77.0.4}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  gateway:
+    build: {context: ., dockerfile: deploy/Gateway.Dockerfile}
+    depends_on: [worker]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, CHOWN, DAC_OVERRIDE, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.25
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    tmpfs: ['/run:rw,nosuid,nodev,noexec,size=4m,nr_inodes=1024', '/tmp:rw,nosuid,nodev,noexec,size=64m,nr_inodes=4096']
+    volumes: [./deploy/private/tls.crt:/secrets/tls.crt:ro, ./deploy/private/tls.key:/secrets/tls.key:ro]
+    networks: {private: {ipv4_address: 10.77.0.4}, ingress: {}}
+    ports: ['${ARGENTUM_BIND_IP:-127.0.0.1}:8765:8765', '${ARGENTUM_BIND_IP:-127.0.0.1}:8767:8767', '${ARGENTUM_BIND_IP:-127.0.0.1}:8788:8788']
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+networks:
+  ingress: {}
+  private:
+    internal: true
+    ipam: {config: [{subnet: 10.77.0.0/28, gateway: 10.77.0.1}]}

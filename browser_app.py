@@ -1,3 +1,7 @@
+import deployment_access
+import isolation_runtime as isolated_runtime
+from resource_limits import JOB_BUDGET
+from web_security import validate_http_url
 #!/usr/bin/env python3
 """
 Argentum Browser - Full browser interface for PS4
@@ -11,16 +15,21 @@ Features:
 from flask import Flask, request, Response, render_template_string, redirect
 from urllib.parse import quote, unquote
 import os
+from pathlib import Path
+from path_security import contained_file, remove_stream_directory
 import uuid
 import time
 import subprocess
 import signal
 
 app = Flask(__name__)
+app.jinja_env.filters['encode'] = lambda value: __import__('urllib.parse', fromlist=['quote']).quote(value, safe='')
+deployment_access.install(app)
 
-STREAM_DIR = '/tmp/hls_browser'
+STREAM_DIR = str(JOB_BUDGET.database.parent / 'browser-hls')
 os.makedirs(STREAM_DIR, exist_ok=True)
 STREAMS = {}
+JOB_BUDGET.install(app, ['stream_start', 'browse', 'submit_form'])
 
 MAIN_TEMPLATE = '''
 <!DOCTYPE html>
@@ -263,7 +272,7 @@ MAIN_TEMPLATE = '''
     </div>
     
     <div class="content">
-        <iframe id="browserFrame" src="{{ home_url }}"></iframe>
+        <button class="go-btn" onclick="playReportedVideo()">Play video</button><iframe id="browserFrame" src="/browse?url={{ home_url | encode }}"></iframe>
     </div>
     
     <div class="video-overlay" id="videoOverlay">
@@ -297,8 +306,8 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
-        var currentUrl = '{{ home_url }}';
-        var history = [currentUrl];
+        var currentUrl = {{ home_url | tojson }};
+        var browserHistory = [currentUrl];
         var historyIndex = 0;
         var currentStreamId = null;
         var isTranscoding = false;
@@ -340,12 +349,12 @@ MAIN_TEMPLATE = '''
             currentUrl = url;
             document.getElementById('urlBar').value = url;
             
-            // Add to history
-            if (historyIndex < history.length - 1) {
-                history = history.slice(0, historyIndex + 1);
+            // Add to browserHistory
+            if (historyIndex < browserHistory.length - 1) {
+                browserHistory = browserHistory.slice(0, historyIndex + 1);
             }
-            history.push(url);
-            historyIndex = history.length - 1;
+            browserHistory.push(url);
+            historyIndex = browserHistory.length - 1;
             
             // Detect videos after load
             setTimeout(() => {
@@ -357,67 +366,42 @@ MAIN_TEMPLATE = '''
         function goBack() {
             if (historyIndex > 0) {
                 historyIndex--;
-                loadURL(history[historyIndex]);
+                loadURL(browserHistory[historyIndex]);
             }
         }
         
         function goForward() {
-            if (historyIndex < history.length - 1) {
+            if (historyIndex < browserHistory.length - 1) {
                 historyIndex++;
-                loadURL(history[historyIndex]);
+                loadURL(browserHistory[historyIndex]);
             }
         }
         
         function goHome() {
-            loadURL('{{ home_url }}');
+            loadURL({{ home_url | tojson }});
         }
         
         // Video detection and handling
+        var reportedVideo = null;
         function detectVideos() {
-            try {
-                var frame = document.getElementById('browserFrame');
-                var frameDoc = frame.contentDocument || frame.contentWindow.document;
-                
-                // Look for video elements
-                var videos = frameDoc.querySelectorAll('video');
-                var iframes = frameDoc.querySelectorAll('iframe');
-                var embeds = frameDoc.querySelectorAll('embed');
-                
-                console.log('Found:', videos.length, 'videos,', iframes.length, 'iframes,', embeds.length, 'embeds');
-                
-                // Add click handlers to videos
-                videos.forEach(function(video) {
-                    video.style.cursor = 'pointer';
-                    video.addEventListener('click', function() {
-                        playVideo(video.src || video.currentSrc);
-                    });
-                });
-                
-                // Check for iframe video players (common)
-                iframes.forEach(function(iframe) {
-                    var src = iframe.src || '';
-                    if (src && !src.includes('youtube.com') && !src.includes('vk.com') && !src.includes('player.vimeo')) {
-                        iframe.style.cursor = 'pointer';
-                        iframe.addEventListener('click', function() {
-                            // Try to detect video URL from iframe
-                            var videoUrl = detectVideoFromIframe(iframe);
-                            if (videoUrl) {
-                                playVideo(videoUrl);
-                            }
-                        });
-                    }
-                });
-                
-            } catch (e) {
-                console.log('Cannot access frame content:', e);
+            document.getElementById('browserFrame').contentWindow.postMessage('argentum-detect-video', '*');
+        }
+        window.addEventListener('message', function(event) {
+            var frame = document.getElementById('browserFrame');
+            if (event.source !== frame.contentWindow || !event.data || !Array.isArray(event.data.argentumVideos)) return;
+            reportedVideo = null;
+            for (var value of event.data.argentumVideos.slice(0,8)) {
+                if (typeof value !== 'string' || value.length > 8192) continue;
+                try {
+                    var candidate = new URL(value);
+                    if (candidate.protocol === 'http:' || candidate.protocol === 'https:') {reportedVideo=value;break;}
+                } catch(error) {}
             }
+        });
+        function playReportedVideo() {
+            if (reportedVideo) playVideo(reportedVideo);
         }
-        
-        function detectVideoFromIframe(iframe) {
-            var src = iframe.src || '';
-            return src;
-        }
-        
+
         function playVideo(videoUrl) {
             if (!videoUrl) return;
             
@@ -533,6 +517,10 @@ MAIN_TEMPLATE = '''
 def browser():
     """Main browser interface"""
     home = request.args.get('home', 'https://www.google.com')
+    try:
+        validate_http_url(home)
+    except ValueError:
+        return 'A valid HTTP or HTTPS home URL is required', 400
     return render_template_string(MAIN_TEMPLATE, home_url=home)
 
 @app.route('/browser/stream/start')
@@ -542,10 +530,12 @@ def stream_start():
     if not video_url:
         return {'error': 'No URL provided'}, 400
     
-    video_url = unquote(video_url)
-    stream_id = str(uuid.uuid4())[:8]
-    segment_dir = f"{STREAM_DIR}/{stream_id}"
-    os.makedirs(segment_dir, exist_ok=True)
+    try:
+        video_url = validate_http_url(video_url)
+    except ValueError:
+        return {'error': 'A valid HTTP or HTTPS URL is required'}, 400
+    stream_id = uuid.uuid4().hex[:16]
+    segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     playlist_path = f"{segment_dir}/playlist.m3u8"
     
     cmd = [
@@ -574,13 +564,7 @@ def stream_start():
     ]
     
     try:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        
-        STREAMS[stream_id] = {
-            'process': proc,
-            'segment_dir': segment_dir,
-            'started': time.time()
-        }
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {})
         
         time.sleep(2)
         
@@ -598,40 +582,23 @@ def stream_start():
 
 @app.route('/browser/hls/<stream_id>/<path:filename>')
 def serve_hls(stream_id, filename):
-    """Serve HLS segments"""
-    if stream_id not in STREAMS:
-        return 'Stream not found', 404
-    
-    segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = os.path.join(segment_dir, filename)
-    
-    if not os.path.exists(file_path):
-        return 'File not found', 404
-    
-    if filename.endswith('.m3u8'):
-        return Response(
-            open(file_path).read(),
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Cache-Control': 'no-cache'}
-        )
-    else:
-        return Response(
-            open(file_path, 'rb').read(),
-            mimetype='video/mp2t'
-        )
+    return JOB_BUDGET.serve_hls(STREAMS, stream_id, filename)
 
 @app.route('/browser/stream/stop/<stream_id>')
 def stream_stop(stream_id):
     """Stop a stream"""
-    if stream_id in STREAMS:
-        proc = STREAMS[stream_id].get('process')
-        if proc:
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-            except:
-                pass
-        del STREAMS[stream_id]
+    JOB_BUDGET.stop(STREAMS, stream_id)
     return {'status': 'stopped'}
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8765, debug=False)
+
+@app.route('/browse', methods=['GET','POST'])
+def browse():
+    from proxy import browse as shared_browse
+    return shared_browse()
+
+@app.route('/submit/<target>/<ticket>', methods=['GET','POST'])
+def submit_form(target, ticket):
+    from proxy import submit_form as shared_submit
+    return shared_submit(target, ticket)

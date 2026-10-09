@@ -1,3 +1,7 @@
+from web_security import validate_http_url
+import deployment_access
+import isolation_runtime as isolated_runtime
+from resource_limits import JOB_BUDGET
 #!/usr/bin/env python3
 """
 Real-time video/audio transcoding proxy for PS4
@@ -5,14 +9,17 @@ Converts any video to HLS stream that PS4 can play
 """
 import subprocess
 import os
+from pathlib import Path
+from path_security import contained_file, remove_stream_directory
 import signal
 import uuid
 import threading
 import time
-from flask import Flask, request, Response, send_file
+from flask import Flask, request, Response, send_file, redirect
 from urllib.parse import unquote
 
 app = Flask(__name__)
+deployment_access.install(app)
 
 # FFmpeg settings for PS4 compatible output
 FFMPEG_HLS = [
@@ -41,30 +48,13 @@ FFMPEG_HLS = [
 ]
 
 STREAMS = {}
-STREAM_DIR = '/tmp/hls_streams'
+JOB_BUDGET.install(app, ['stream', 'proxy'])
+STREAM_DIR = str(JOB_BUDGET.database.parent / 'hls')
 
 os.makedirs(STREAM_DIR, exist_ok=True)
 
-def kill_process(pid):
-    try:
-        os.kill(pid, signal.SIGTERM)
-        time.sleep(0.5)
-        os.kill(pid, signal.SIGKILL)
-    except:
-        pass
-
 def cleanup_stream(stream_id):
-    """Clean up old stream"""
-    if stream_id in STREAMS:
-        proc = STREAMS[stream_id].get('process')
-        if proc:
-            kill_process(proc.pid)
-        del STREAMS[stream_id]
-    
-    # Remove segment files
-    segment_dir = f"{STREAMS.get(stream_id, {}).get('segment_dir', '')}"
-    if segment_dir and os.path.exists(segment_dir):
-        subprocess.run(['rm', '-rf', segment_dir], capture_output=True)
+    JOB_BUDGET.stop(STREAMS, stream_id)
 
 @app.route('/stream')
 def stream():
@@ -77,10 +67,12 @@ def stream():
     if not video_url:
         return {'error': 'No URL provided'}, 400
     
-    video_url = unquote(video_url)
-    stream_id = str(uuid.uuid4())[:8]
-    segment_dir = f"{STREAM_DIR}/{stream_id}"
-    os.makedirs(segment_dir, exist_ok=True)
+    try:
+        video_url = validate_http_url(video_url)
+    except ValueError:
+        return {'error': 'A valid HTTP or HTTPS URL is required'}, 400
+    stream_id = uuid.uuid4().hex[:16]
+    segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     
     playlist_path = f"{segment_dir}/playlist.m3u8"
     
@@ -110,15 +102,7 @@ def stream():
     ]
     
     try:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        
-        STREAMS[stream_id] = {
-            'process': proc,
-            'segment_dir': segment_dir,
-            'playlist': playlist_path,
-            'started': time.time(),
-            'url': video_url
-        }
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {'playlist': playlist_path, 'url': video_url})
         
         # Give ffmpeg a moment to start
         time.sleep(2)
@@ -139,33 +123,15 @@ def stream():
 
 @app.route('/hls/<stream_id>/<path:filename>')
 def hls_files(stream_id, filename):
-    """Serve HLS files"""
-    if stream_id not in STREAMS:
-        return {'error': 'Stream not found'}, 404
-    
-    segment_dir = STREAMS[stream_id]['segment_dir']
-    file_path = os.path.join(segment_dir, filename)
-    
-    if not os.path.exists(file_path):
-        return {'error': 'File not found'}, 404
-    
-    # Check if it's an m3u8 file
-    if filename.endswith('.m3u8'):
-        return Response(
-            open(file_path).read(),
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Cache-Control': 'no-cache'}
-        )
-    else:
-        return send_file(file_path, mimetype='video/mp2t')
+    return JOB_BUDGET.serve_hls(STREAMS, stream_id, filename)
 
 @app.route('/status/<stream_id>')
 def status(stream_id):
     """Check stream status"""
-    if stream_id not in STREAMS:
+    info = JOB_BUDGET.snapshot(STREAMS, stream_id)
+    if info is None:
         return {'error': 'Stream not found'}, 404
-    
-    info = STREAMS[stream_id]
+
     proc = info.get('process')
     
     return {
@@ -192,16 +158,12 @@ def proxy():
     if not video_url:
         return {'error': 'No URL provided'}, 400
     
-    video_url = unquote(video_url)
+    try:
+        video_url = validate_http_url(video_url)
+    except ValueError:
+        return {'error': 'A valid HTTP or HTTPS URL is required'}, 400
     stream_id = 'direct'
-    segment_dir = f"{STREAM_DIR}/{stream_id}"
-    os.makedirs(segment_dir, exist_ok=True)
-    
-    # Clean up old direct stream
-    if 'direct' in STREAMS:
-        proc = STREAMS['direct'].get('process')
-        if proc:
-            kill_process(proc.pid)
+    segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     
     playlist_path = f"{segment_dir}/playlist.m3u8"
     
@@ -231,15 +193,7 @@ def proxy():
     ]
     
     try:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        
-        STREAMS['direct'] = {
-            'process': proc,
-            'segment_dir': segment_dir,
-            'playlist': playlist_path,
-            'started': time.time(),
-            'url': video_url
-        }
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {'playlist': playlist_path, 'url': video_url})
         
         time.sleep(2)
         
