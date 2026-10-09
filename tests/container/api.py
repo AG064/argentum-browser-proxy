@@ -30,8 +30,14 @@ def validate_video_routes(root):
         else:
             data=result.json();key=data['stream_id'];assert data['status']=='started'
             path=data.get('hls_url') or data.get('playlist_url') or '/browser/hls/'+key+'/playlist.m3u8'
-        playlist=session.get(base+path,verify=certificate,timeout=5)
-        assert playlist.status_code==200 and '#EXTM3U' in playlist.text
+        # Start replies precede the first completed HLS segment.
+        deadline=time.monotonic()+15
+        while True:
+            playlist=session.get(base+path,verify=certificate,timeout=5)
+            if playlist.status_code==200 or time.monotonic()>=deadline:break
+            assert playlist.status_code==404,(route,playlist.status_code,playlist.text[:200])
+            time.sleep(.2)
+        assert playlist.status_code==200 and '#EXTM3U' in playlist.text,(route,playlist.status_code,playlist.text[:200])
         assert playlist.headers['Cache-Control']=='no-cache'
         segment=next(line for line in playlist.text.splitlines() if line and not line.startswith('#'))
         partial=session.get(base+path.rsplit('/',1)[0]+'/'+segment,headers={'Range':'bytes=0-3'},verify=certificate,timeout=5)
