@@ -40,7 +40,12 @@ def validate_video_routes(root):
         assert stopped.status_code==200
         assert session.get(base+path,verify=certificate,timeout=5).status_code==404
     session=sessions[8765];base='https://127.0.0.1:8765'
+    for scheme in ('http','https'):
+        good=session.get(base+'/transcode',params={'url':scheme+'://public.fixture.test/good.m3u8'},headers={'Origin':base},verify=certificate,timeout=15)
+        assert good.status_code==200,(scheme,good.status_code,good.text[:200])
+        data=good.json();assert data['status']=='started'
+        assert session.get(base+'/hls/stop/'+data['stream_id'],headers={'Origin':base},verify=certificate,timeout=10).status_code==200
     failed=session.get(base+'/transcode',params={'url':'http://public.fixture.test/bad.m3u8'},headers={'Origin':base},verify=certificate,timeout=15)
     assert failed.status_code==500,failed.status_code
     for session in sessions.values():session.close()
-    print(json.dumps({'all_five_video_routes':True,'hls_ranges_and_stop':True,'private_hls_fetch_blocked':True}))
+    print(json.dumps({'all_five_video_routes':True,'hls_ranges_and_stop':True,'encrypted_http_https_hls_inputs':True,'private_hls_fetch_blocked':True}))

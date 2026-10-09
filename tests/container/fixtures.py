@@ -20,6 +20,11 @@ root=Path('/fixture');root.mkdir(exist_ok=True)
 subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc=size=128x128:rate=10',
     '-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=48000','-t','6','-c:v','libx264','-threads','2','-filter_threads','1',
     '-pix_fmt','yuv420p','-c:a','aac','-y',str(root/'movie.mp4')],check=True)
+key=root/'key.bin';key.write_bytes(bytes(range(16)))
+(root/'key-info').write_text('key.bin\n'+str(key)+'\n')
+subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-i',str(root/'movie.mp4'),
+    '-c','copy','-hls_time','2','-hls_list_size','0','-hls_key_info_file',str(root/'key-info'),
+    '-hls_segment_filename',str(root/'good%d.ts'),str(root/'good.m3u8')],check=True)
 
 
 def dns_answer(data, source):
@@ -94,6 +99,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             page=b'<html><body><video src="/movie.mp4?token=%252F"></video><script>fetch("http://private.fixture.test/private").catch(()=>{});new WebSocket("ws://private.fixture.test/socket");</script></body></html>'
             return self.reply(page,'text/html',headers=[('Set-Cookie','session=fixture; Path=/; HttpOnly')])
         if path=='/bad.m3u8':return self.reply(b'#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nhttp://private.fixture.test/private.ts\n#EXT-X-ENDLIST\n','application/vnd.apple.mpegurl')
+        if path=='/good.m3u8':return self.reply((root/'good.m3u8').read_bytes(),'application/vnd.apple.mpegurl')
+        if path=='/key.bin' or (path.startswith('/good') and path.endswith('.ts') and path[5:-3].isdigit()):
+            return self.reply((root/path.lstrip('/')).read_bytes(),'application/octet-stream')
         if path in ('/movie.mp4','/video/movie.mp4','/videox/movie.mp4'):return self.reply((root/'movie.mp4').read_bytes(),'video/mp4')
         if path=='/cookie':return self.reply(self.headers.get('Cookie','').encode())
         return self.reply(b'PRIVATE_FIXTURE' if self.server.server_address[0]==private else b'PUBLIC_FIXTURE')

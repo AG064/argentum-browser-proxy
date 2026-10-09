@@ -27,7 +27,7 @@ Upstream documents use an opaque sandbox and URL-bound fetch capabilities. Nativ
 
 ## Resources and cleanup
 
-Expensive requests share two active/preparing slots and six active/retained records. Browser helpers and extraction have deadlines and bounded output capture. FFmpeg uses bounded codec threads. Cookie-bearing inputs pass through the private per-job media transport, whose HTTP client preserves Secure, host-only, domain and path scope across redirects; FFmpeg does not receive cookie credentials. Signed media URLs are not decoded twice.
+Expensive requests share two active/preparing slots and six active/retained records. Browser helpers and extraction have deadlines and bounded output capture. FFmpeg uses bounded codec threads. All its network inputs pass through the private per-job media transport, whose HTTP client verifies TLS and preserves Secure, host-only, domain and path scope across redirects; FFmpeg does not receive cookie credentials. Playlist resources are rewritten through that same transport. Signed media URLs are not decoded twice.
 
 The worker has hard aggregate limits of two CPUs, 1536 MiB memory with no swap, 256 PIDs and 1024 file descriptors. Its root filesystem is read-only. Writable runtime, temporary and shared-memory mounts are separately bounded at 256, 64 and 128 MiB, with inode caps. Broker/gateway resources and Docker logs are also bounded. Runtime checks reject missing limits.
 
