@@ -41,6 +41,10 @@ try:
  print(json.dumps({'service_failure_closes_namespace':True}))
 except Exception:
  print(run([*base,'logs','--tail','60']))
+ broker=run([*base,'ps','-q','broker'])
+ diagnostic=subprocess.run(['docker','exec','-i',broker,'python','-'],cwd=root,
+     input=(root/'tests/container/debug_broker.py').read_text(),capture_output=True,text=True)
+ print(diagnostic.stdout[-4000:]+diagnostic.stderr[-1000:])
  raise
 finally:
  subprocess.run([*base,'down'],cwd=root,check=False)

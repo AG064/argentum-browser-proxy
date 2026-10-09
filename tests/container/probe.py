@@ -39,7 +39,7 @@ def network():
     finally:udp.close()
     for scheme in ['http','https']:
         response=client.get(scheme+'://public.fixture.test/bytes',timeout=5,allow_redirects=True)
-        assert response.status_code==200
+        assert response.status_code==200,(scheme,response.status_code,response.text[:100])
         assert response.content==bytes(range(256))*4
     response=client.post('http://public.fixture.test/echo?token=%252F',data=b'a=one&a=two&empty=',timeout=5,allow_redirects=True)
     assert response.content==b'a=one&a=two&empty='
