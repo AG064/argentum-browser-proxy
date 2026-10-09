@@ -85,6 +85,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         state['cookie_leaks']+=1
         if path=='/redirect-private':return self.reply(b'',status=302,headers=[('Location','http://private.fixture.test/private')])
         if path=='/redirect-public':return self.reply(b'',status=302,headers=[('Location','http://public.fixture.test/bytes')])
+        if path in ('/video/redirect-other','/video/redirect-path','/video/redirect-child') and 'private_session=synthetic' not in self.headers.get('Cookie',''):
+            return self.reply(b'Fixture cookie required',status=401)
         if path=='/video/redirect-other':return self.reply(b'',status=302,headers=[('Location','http://evilpublic.fixture.test/videox/movie.mp4')])
         if path=='/video/redirect-path':return self.reply(b'',status=302,headers=[('Location','https://public.fixture.test/videox/movie.mp4')])
         if path=='/video/redirect-child':return self.reply(b'',status=302,headers=[('Location','https://child.public.fixture.test/video/movie.mp4')])
