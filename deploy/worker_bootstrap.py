@@ -48,6 +48,15 @@ def main():
         path = Path('/runtime')/name
         path.mkdir(mode=0o700, exist_ok=True)
         os.chown(path, 10001, 10001)
+    certificates = Path('/usr/local/share/ca-certificates')
+    if list(certificates.glob('*.crt')):
+        store = Path('/runtime/home/.pki/nssdb')
+        store.mkdir(parents=True, mode=0o700, exist_ok=True)
+        command('certutil', '-d', 'sql:'+str(store), '-N', '--empty-password')
+        for certificate in certificates.glob('*.crt'):
+            command('certutil', '-d', 'sql:'+str(store), '-A', '-n', certificate.name, '-t', 'C,,', '-i', str(certificate))
+        for path in [store.parent, store, *store.iterdir()]:
+            os.chown(path, 10001, 10001)
     marker = root/'isolation.json'
     marker.write_text(json.dumps(dict(version=1, broker_ip=broker, proxy='http://'+broker+':3128',
         net_namespace=os.readlink('/proc/self/ns/net'), supervisor_pid=os.getpid())))

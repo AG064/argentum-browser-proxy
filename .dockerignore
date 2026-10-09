@@ -2,5 +2,6 @@
 .runtime
 node_modules
 deploy/private
+tests/container/private/*.key
 __pycache__
 *.pyc

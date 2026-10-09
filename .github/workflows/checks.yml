@@ -34,6 +34,10 @@ jobs:
       - run: docker compose build
       - run: docker compose up -d
       - run: python tests/container/smoke.py
+      - run: docker compose down
+      - run: python tests/container/generate_fixtures.py
+      - run: docker build --build-arg WORKER_IMAGE=argentum-browser-proxy-worker -f tests/container/Test.Dockerfile -t argentum-browser-proxy-worker-fixture .
+      - run: python tests/container/run.py
       - name: Diagnostics
         if: failure()
         run: docker compose logs --tail 80
