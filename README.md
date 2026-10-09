@@ -37,6 +37,6 @@ Job supervisors adopt and kill detached descendants. Server or supervisor failur
 
 Docker bases are pinned by digest. The worker bundles Node 22 and Python 3.12. Node/Python Playwright share release 1.63.0 and the matching full Chromium. Waitress 3.0.2 serves the applications. Python bounds are not a complete transitive lockfile; rebuild against updated security packages and run the audits.
 
-The vendored [Playwright seccomp policy](https://github.com/microsoft/playwright/blob/v1.63.0/utils/docker/seccomp_profile.json) adds pidfd operations for the supervisor and retains a default-deny syscall policy. Host IPC, SYS_ADMIN, disabled browser sandboxing and direct-network fallback are not used.
+The vendored [Playwright seccomp policy](https://github.com/microsoft/playwright/blob/v1.63.0/utils/docker/seccomp_profile.json) permits pidfd operations for supervision and chroot for Chromium's user-namespace sandbox while retaining the default-deny syscall policy. The service holds no capabilities in the container namespace. Host IPC, SYS_ADMIN, disabled browser sandboxing and direct-network fallback are not used.
 
 CI validates source/policy controls and the production images against offline DNS, HTTP, TLS and media fixtures. Physical PS4 playback and real provider availability remain deployment checks.
