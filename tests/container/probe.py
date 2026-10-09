@@ -125,6 +125,14 @@ def cookie_media():
             assert response.status_code==200 and response.content
             session.close()
         finally:media_client.unregister(registered['cap'])
+    for path in ('redirect-other','redirect-path','redirect-child'):
+        command=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-i',
+                 'https://public.fixture.test/video/'+path,'-t','1','-f','null','-']
+        prepared=runtime.ffmpeg_options(command,cookies)
+        try:
+            result=run_guarded(prepared,seconds=30)
+            assert result.returncode==0,result.stderr
+        finally:media_client.unregister(prepared.media_cap)
     print(json.dumps({'cookie_downgrade_suffix_subdomain_and_path_scoped':True}))
 
 if __name__=='__main__':
