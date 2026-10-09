@@ -100,6 +100,42 @@ class PolicyTests(unittest.TestCase):
             proxy.shutdown();proxy.server_close();origin.shutdown();origin.server_close()
 
 
+class SearchConnectorTests(unittest.TestCase):
+    def test_fixed_connector_requires_capability_and_bounds_responses(self):
+        from urllib.parse import parse_qs, urlsplit
+        seen=[]
+        class Search(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                query=parse_qs(urlsplit(self.path).query).get('q',[''])[0]
+                if query=='redirect':
+                    self.send_response(302);self.send_header('Location','/trap');self.end_headers();return
+                body=json.dumps({'results':[], 'query':query}).encode()
+                if query=='large':body=b'{"value":"'+b'x'*(2*1024*1024)+b'"}'
+                self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        origin=http.server.ThreadingHTTPServer(('127.0.0.1',0),Search)
+        proxy=broker.BrokerServer(('127.0.0.1',0),allowed_clients=['127.0.0.1'],
+            search_token='fixture-search',search_endpoint='http://127.0.0.1:'+str(origin.server_port)+'/search')
+        for server in (origin,proxy):threading.Thread(target=server.serve_forever,daemon=True).start()
+        try:
+            with requests.Session() as session:
+                session.trust_env=False
+                endpoint='http://127.0.0.1:'+str(proxy.server_port)+'/_argentum/search'
+                self.assertEqual(session.get(endpoint,params={'q':'unauthorized'},timeout=3).status_code,403)
+                self.assertEqual(seen,[])
+                headers={'Authorization':'Bearer fixture-search'}
+                query='http://private.test/path?token=%252F'
+                result=session.get(endpoint,params={'q':query,'offset':2},headers=headers,timeout=3)
+                self.assertEqual(result.status_code,200);self.assertEqual(result.json()['query'],query)
+                self.assertEqual(parse_qs(urlsplit(seen[-1]).query)['offset'],['2'])
+                for query in ('redirect','large'):
+                    self.assertEqual(session.get(endpoint,params={'q':query},headers=headers,timeout=3).status_code,502)
+                self.assertTrue(all(urlsplit(path).path=='/search' for path in seen))
+        finally:
+            proxy.shutdown();proxy.server_close();origin.shutdown();origin.server_close()
+
+
 class AccessTests(unittest.TestCase):
     def setUp(self):
         self.key=self.enterContext(patch.object(access,'key',return_value=b'K'*43))
