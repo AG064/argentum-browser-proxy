@@ -52,12 +52,12 @@ def main():
         os.chown(path, 10001, 10001)
     certificates = Path('/usr/local/share/ca-certificates')
     if list(certificates.glob('*.crt')):
-        store = Path('/runtime/home/.pki/nssdb')
+        store = Path('/runtime/home/.local/share/pki/nssdb')
         store.mkdir(parents=True, mode=0o700, exist_ok=True)
         command('certutil', '-d', 'sql:'+str(store), '-N', '--empty-password')
         for certificate in certificates.glob('*.crt'):
             command('certutil', '-d', 'sql:'+str(store), '-A', '-n', certificate.name, '-t', 'C,,', '-i', str(certificate))
-        for path in [store.parent, store, *store.iterdir()]:
+        for path in [Path('/runtime/home/.local'), Path('/runtime/home/.local/share'), store.parent, store, *store.iterdir()]:
             os.chown(path, 10001, 10001)
     marker = root/'isolation.json'
     marker.write_text(json.dumps(dict(version=1, broker_ip=broker, proxy='http://'+broker+':3128',
@@ -67,6 +67,8 @@ def main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     for variable in ('HOME','http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','all_proxy','NO_PROXY','no_proxy'):
         os.environ.pop(variable, None)
+    os.environ['HOME'] = '/runtime/home'
+    os.environ['XDG_DATA_HOME'] = '/runtime/home/.local/share'
     os.execvp('setpriv', ['setpriv', '--reuid=10001', '--regid=10001', '--clear-groups', '--bounding-set=-all',
         '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '/usr/local/bin/python', '/app/deploy/supervisor.py'])
 

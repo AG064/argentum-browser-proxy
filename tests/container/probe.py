@@ -7,7 +7,8 @@ sys.path.insert(0,'/app')
 from pathlib import Path
 import subprocess
 import os
-os.environ.pop('HOME',None)
+os.environ['HOME']='/runtime/home'
+os.environ['XDG_DATA_HOME']='/runtime/home/.local/share'
 import isolation_runtime as runtime
 from outbound import client
 from job_tools import run_guarded
