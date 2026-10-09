@@ -1,9 +1,15 @@
+import deployment_access
+import isolation_runtime as isolated_runtime
 from resource_limits import JOB_BUDGET
 from flask import Flask, request, Response, redirect, render_template_string, send_file
 from urllib.parse import quote, urlparse, urljoin, urlsplit, urlunsplit, unquote
 from html import escape
 from web_security import validate_http_url, encode_form_target, decode_form_target, resolve_form_destination
-import requests
+from outbound import client as requests
+from outbound import search as trusted_search
+from job_tools import run_guarded
+from cookie_security import cookie_header
+import fetch_tickets
 from bs4 import BeautifulSoup
 import chardet
 import subprocess
@@ -16,14 +22,16 @@ import uuid
 import time
 import base64
 import re
+import sys
 
 app = Flask(__name__, static_folder=None)
+deployment_access.install(app)
 STATIC_DIR = os.environ.get('ARGENTUM_PROXY_STATIC_DIR', os.path.join(os.path.dirname(__file__), 'static'))
 
 STREAM_DIR = str(JOB_BUDGET.database.parent / 'hls')
 os.makedirs(STREAM_DIR, exist_ok=True)
 STREAMS = {}
-JOB_BUDGET.install(app, ['watch', 'transcode_video', 'extract_video'])
+JOB_BUDGET.install(app, ['watch', 'transcode_video', 'extract_video', 'browse', 'submit_form', 'search'])
 
 CLOUDFLARE_CACHE = {}
 
@@ -37,23 +45,18 @@ def check_cloudflare(url, resp):
 
 def bypass_cloudflare(url):
     """Use Playwright to bypass Cloudflare and get cookies"""
+    url = validate_http_url(url)
     cache_key = urlparse(url).netloc
     
     # Check in-memory cache (5 min TTL)
     if cache_key in CLOUDFLARE_CACHE:
         cached = CLOUDFLARE_CACHE[cache_key]
         if cached.get('time', 0) > time.time() - 300:
-            return cached.get('cookies'), cached.get('user_agent')
+            return cached.get('cookies', []), cached.get('user_agent')
     
     try:
         helper = Path(__file__).resolve().with_name('cloudflare.sh')
-        result = subprocess.run(
-            [str(helper), url],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(helper.parent)
-        )
+        result = run_guarded([str(helper), url], seconds=60, cwd=str(helper.parent))
         
         if result.returncode == 0 and result.stdout:
             data = json.loads(result.stdout)
@@ -62,17 +65,15 @@ def bypass_cloudflare(url):
                 user_agent = data.get('user_agent', '')
                 
                 # Build cookie string for requests
-                cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
                 
                 # Cache result
                 CLOUDFLARE_CACHE[cache_key] = {
                     'cookies': cookies,
                     'user_agent': user_agent,
-                    'cookie_str': cookie_str,
                     'time': time.time()
                 }
                 
-                return cookie_str, user_agent
+                return cookies, user_agent
     except Exception as e:
         print(f"[Cloudflare] Bypass error: {e}")
     
@@ -97,18 +98,17 @@ def make_request(url, headers=None, timeout=15, post_data=None):
     if check_cloudflare(url, resp):
         print(f"[Cloudflare] Detected challenge for {urlparse(url).netloc}, attempting bypass...")
         
-        cookie_str, user_agent = bypass_cloudflare(url)
+        cookies, user_agent = bypass_cloudflare(resp.url)
         
-        if cookie_str:
+        if cookies:
             print(f"[Cloudflare] Bypass successful, retrying with cookies...")
-            default_headers['Cookie'] = cookie_str
             if user_agent:
                 default_headers['User-Agent'] = user_agent
             
             if post_data is not None:
-                resp = requests.post(url, headers=default_headers, data=post_data, timeout=timeout, allow_redirects=True)
+                resp = requests.post(url, headers=default_headers, data=post_data, cookies=cookies, timeout=timeout, allow_redirects=True)
             else:
-                resp = requests.get(url, headers=default_headers, timeout=timeout, allow_redirects=True)
+                resp = requests.get(url, headers=default_headers, cookies=cookies, timeout=timeout, allow_redirects=True)
     
     return resp
 
@@ -258,8 +258,7 @@ def search():
     offset = page * 20
     
     try:
-        resp = requests.get(f'http://localhost:8888/search?q={quote(q)}&format=json&lang=ru&offset={offset}', timeout=15)
-        data = resp.json()
+        data = trusted_search(q, offset)
         
         results = []
         for r in data.get('results', [])[:20]:
@@ -289,7 +288,8 @@ def browse():
     return browse_url(url, body, request.content_type)
 
 @app.route('/submit/<target>', methods=['GET', 'POST'])
-def submit_form(target):
+@app.route('/submit/<target>/<ticket>', methods=['GET', 'POST'])
+def submit_form(target, ticket=None):
     try:
         url = decode_form_target(target)
     except ValueError:
@@ -297,7 +297,7 @@ def submit_form(target):
     if request.method in ('GET', 'HEAD'):
         parsed = urlsplit(url)
         destination = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, request.query_string.decode('ascii'), ''))
-        return redirect('/browse?url=' + quote(destination, safe=''))
+        return redirect(fetch_tickets.browse_url(destination))
     return browse_url(url, request.get_data(), request.content_type)
 
 def browse_url(url, post_data=None, content_type=None):
@@ -337,21 +337,23 @@ def browse_url(url, post_data=None, content_type=None):
                         continue
                     val = urljoin(base_url, val)
                     if val and val.startswith('http'):
-                        tag[attr] = f'/browse?url={quote(val)}'
+                        if tag.name in ('video', 'source') and attr == 'src':
+                            tag['data-argentum-source'] = val
+                        tag[attr] = fetch_tickets.browse_url(val)
             
             # Preserve native form encoding, successful controls and submitter overrides.
             for form in soup.find_all('form'):
                 action = form.get('action', '')
                 try:
                     destination = resolve_form_destination(document_url, base_href, action)
-                    form['action'] = '/submit/' + encode_form_target(destination)
+                    form['action'] = fetch_tickets.form_url(destination)
                 except ValueError:
                     form['action'] = '/submit/invalid'
             for control in soup.find_all(['button', 'input'], attrs={'formaction': True}):
                 action = control.get('formaction', '')
                 try:
                     destination = resolve_form_destination(document_url, base_href, action)
-                    control['formaction'] = '/submit/' + encode_form_target(destination)
+                    control['formaction'] = fetch_tickets.form_url(destination)
                 except ValueError:
                     control['formaction'] = '/submit/invalid'
 
@@ -360,7 +362,10 @@ def browse_url(url, post_data=None, content_type=None):
                 if 'url=' in content.lower():
                     idx = content.lower().index('url=')
                     target_url = content[idx+4:].split(';')[0].strip('"\'')
-                    meta['content'] = f'0;url=/browse?url={quote(target_url)}'
+                    try:
+                        meta['content'] = '0;url='+fetch_tickets.browse_url(urljoin(document_url, target_url))
+                    except ValueError:
+                        meta.decompose()
             
             style = soup.new_tag('style')
             style.string = '''
@@ -382,78 +387,10 @@ def browse_url(url, post_data=None, content_type=None):
             
             # Add JavaScript to intercept form submissions and video players
             script = soup.new_tag('script')
-            script.string = '''
-                document.addEventListener('DOMContentLoaded', function() {
-                    // Detect and handle video players
-                    var videoButtons = [];
-                    
-                    // Find iframes (common for embedded players)
-                    document.querySelectorAll('iframe').forEach(function(iframe) {
-                        var src = iframe.src || '';
-                        if (src && !src.includes('youtube') && !src.includes('vk.com')) {
-                            videoButtons.push({type: 'iframe', src: src, element: iframe});
-                        }
-                    });
-                    
-                    // Find video tags
-                    document.querySelectorAll('video').forEach(function(video) {
-                        var src = video.src || video.currentSrc || '';
-                        if (src) {
-                            videoButtons.push({type: 'video', src: src, element: video});
-                        }
-                        // Also check for source tags
-                        video.querySelectorAll('source').forEach(function(source) {
-                            if (source.src) {
-                                videoButtons.push({type: 'source', src: source.src, element: video});
-                            }
-                        });
-                    });
-                    
-                    // Find embed tags
-                    document.querySelectorAll('embed').forEach(function(embed) {
-                        var src = embed.src || embed.getAttribute('flashvars') || '';
-                        if (src) videoButtons.push({type: 'embed', src: src, element: embed});
-                    });
-                    
-                    // Add watch button if videos found
-                    if (videoButtons.length > 0) {
-                        var playerBar = document.createElement('div');
-                        playerBar.id = 'proxy-player-bar';
-                        playerBar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-top:2px solid #f0a500;padding:15px;display:flex;align-items:center;justify-content:center;z-index:999999;';
-                        
-                        var btn = document.createElement('button');
-                        btn.textContent = '▶ Watch via Proxy (Transcoded for PS4)';
-                        btn.style.cssText = 'background:#f0a500;color:#000;border:none;padding:12px 24px;font-size:16px;font-weight:600;cursor:pointer;border-radius:6px;';
-                        btn.onclick = function() {
-                            // Try to find the best video URL
-                            var videoUrl = '';
-                            for (var i = 0; i < videoButtons.length; i++) {
-                                var item = videoButtons[i];
-                                if (item.src && item.src.startsWith('http') && !item.src.includes('doubleclick')) {
-                                    videoUrl = item.src;
-                                    break;
-                                }
-                            }
-                            if (!videoUrl && videoButtons.length > 0) {
-                                videoUrl = videoButtons[0].src;
-                            }
-                            if (videoUrl) {
-                                window.location.href = '/watch?url=' + encodeURIComponent(videoUrl);
-                            } else {
-                                alert('Could not find video URL. Try opening the player directly.');
-                            }
-                        };
-                        
-                        playerBar.appendChild(btn);
-                        document.body.appendChild(playerBar);
-                        document.body.style.paddingBottom = '80px';
-                    }
-                });
-            '''
+            script.string = fetch_tickets.VIDEO_BRIDGE
             if soup.head:
                 soup.head.append(script)
-            
-            header = BeautifulSoup(f'''<div class="header"><a href="/">Home</a><a href="/browse?url={quote(url)}">Refresh</a><form method="get" action="/browse" style="display:inline"><input type="text" name="url" value="{escape(url, quote=True)}"><button type="submit">Go</button></form></div>''', 'html.parser')
+            header = BeautifulSoup(f'''<div class="header"><a href="{escape(fetch_tickets.browse_url(url), quote=True)}">Refresh</a><form method="get" action="/browse" style="display:inline"><input type="text" name="url" value="{escape(url, quote=True)}" readonly><input type="hidden" name="cap" value="{fetch_tickets.mint(url)}"><button type="submit">Refresh</button></form></div>''', 'html.parser')
             if soup.body:
                 soup.body.insert(0, header)
             
@@ -475,7 +412,10 @@ def watch():
     if not video_url:
         return redirect('/')
     
-    video_url = unquote(video_url)
+    try:
+        video_url = validate_http_url(video_url)
+    except ValueError:
+        return {'error': 'A valid HTTP or HTTPS URL is required'}, 400
     stream_id = uuid.uuid4().hex[:16]
     segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     playlist_path = f"{segment_dir}/playlist.m3u8"
@@ -684,7 +624,7 @@ def browser_ui():
     </div>
     
     <div class="content">
-        <iframe id="browserFrame" src="/browse?url=''' + quote(home) + '''"></iframe>
+        <button class="go-btn" onclick="playReportedVideo()">Play video</button><iframe id="browserFrame" src="/browse?url=''' + quote(home) + '''"></iframe>
     </div>
     
     <div class="video-overlay" id="videoOverlay">
@@ -760,18 +700,26 @@ def browser_ui():
         function goForward() { if (historyIndex < browserHistory.length - 1) { historyIndex++; loadURL(browserHistory[historyIndex]); } }
         function goHome() { loadURL(''' + home_json + '''); }
         
+        var reportedVideo = null;
         function detectVideos() {
-            try {
-                var frame = document.getElementById("browserFrame");
-                var frameDoc = frame.contentDocument || frame.contentWindow.document;
-                var videos = frameDoc.querySelectorAll("video");
-                videos.forEach(function(video) {
-                    video.style.cursor = "pointer";
-                    video.onclick = function() { playVideo(this.src || this.currentSrc); };
-                });
-            } catch(e) {}
+            document.getElementById('browserFrame').contentWindow.postMessage('argentum-detect-video', '*');
         }
-        
+        window.addEventListener('message', function(event) {
+            var frame = document.getElementById('browserFrame');
+            if (event.source !== frame.contentWindow || !event.data || !Array.isArray(event.data.argentumVideos)) return;
+            reportedVideo = null;
+            for (var value of event.data.argentumVideos.slice(0,8)) {
+                if (typeof value !== 'string' || value.length > 8192) continue;
+                try {
+                    var candidate = new URL(value);
+                    if (candidate.protocol === 'http:' || candidate.protocol === 'https:') {reportedVideo=value;break;}
+                } catch(error) {}
+            }
+        });
+        function playReportedVideo() {
+            if (reportedVideo) playVideo(reportedVideo);
+        }
+
         function playVideo(videoUrl) {
             if (!videoUrl) return;
             showTranscodeStatus("Starting transcoding...");
@@ -845,110 +793,46 @@ def extract_video_url_filmix(page):
         print(f"Filmix extraction error: {e}")
     return None
 
+def extracted_media(url):
+    url = validate_http_url(url)
+    result = run_guarded([sys.executable, str(Path(__file__).with_name('media_extract.py')), url], seconds=45)
+    if result.returncode != 0:
+        raise ValueError('Media extraction failed')
+    return json.loads(result.stdout)
+
+
 @app.route('/extract')
 def extract_video():
-    """Extract video URL from a page using Playwright browser"""
-    if not PLAYWRIGHT_AVAILABLE:
-        return {'error': 'Playwright not installed'}, 500
-    
     url = request.args.get('url', '')
     if not url:
         return {'error': 'No URL provided'}, 400
-    
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True)
-            page = browser.new_page()
-            
-            page.goto(url, timeout=20000, wait_until='networkidle')
-            page.wait_for_timeout(3000)
-            
-            video_url = None
-            
-            # Try Filmix
-            if 'filmix' in url:
-                video_url = extract_video_url_filmix(page)
-            
-            # Try to find direct video/m3u8 in network requests
-            if not video_url:
-                def handle_response(response):
-                    nonlocal video_url
-                    if not video_url and any(x in response.url for x in ['.m3u8', '.mp4', 'manifest', 'playlist']):
-                        if response.url.endswith('.mp4') or '.m3u8' in response.url:
-                            video_url = response.url
-                page.on('response', handle_response)
-                page.wait_for_timeout(2000)
-            
-            browser.close()
-            
-            if video_url:
-                return {'video_url': video_url, 'status': 'ok'}
-            else:
-                return {'error': 'No video URL found', 'status': 'not_found'}, 404
-                
-    except Exception as e:
-        return {'error': str(e)}, 500
+        media = extracted_media(url)
+        if not media:
+            return {'error': 'No video URL found'}, 404
+        return {'video_url': media['video_url'], 'status': 'ok'}
+    except ValueError:
+        return {'error': 'Media extraction failed'}, 400
+
 
 @app.route('/transcode')
 def transcode_video():
-    """Start transcoding a video URL for PS4.
-    
-    Args:
-        url: Direct video URL (mp4/m3u8)
-        page_url: Page URL to auto-extract video using Playwright (with cookies)
-    """
     page_url = request.args.get('page_url', '')
     video_url = request.args.get('url', '')
-    
-    if page_url:
-        # Auto-extract using Playwright with full browser context
-        page_url = unquote(page_url)
-        if not PLAYWRIGHT_AVAILABLE:
-            return {'error': 'Playwright not installed'}, 500
-        
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True)
-                context = browser.new_context()
-                page = context.new_page()
-                
-                page.goto(page_url, timeout=20000, wait_until='networkidle')
-                page.wait_for_timeout(5000)
-                
-                # Get video URL from page
-                video_url = None
-                if 'filmix' in page_url:
-                    video_url = extract_video_url_filmix(page)
-                else:
-                    videos = page.query_selector_all('video[src]')
-                    if videos:
-                        video_url = videos[0].get_attribute('src')
-                
-                if not video_url:
-                    browser.close()
-                    return {'error': 'No video URL found on page'}, 404
-                
-                # Get cookies for the video domain
-                parsed = urlparse(video_url)
-                cookies = context.cookies([f"https://{parsed.netloc}/"])
-                cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
-                
-                browser.close()
-                
-                # Start transcode with cookies
-                return _start_transcode(video_url, cookie_str)
-                
-        except Exception as e:
-            return {'error': f'Playwright extraction failed: {str(e)}'}, 500
-    
-    elif video_url:
-        video_url = unquote(video_url)
-        return _start_transcode(video_url)
-    
-    return {'error': 'No URL provided'}, 400
+    try:
+        if page_url:
+            media = extracted_media(page_url)
+            if not media:
+                return {'error': 'No video URL found'}, 404
+            return _start_transcode(media['video_url'], media['cookies'])
+        if video_url:
+            return _start_transcode(validate_http_url(video_url))
+        return {'error': 'No URL provided'}, 400
+    except ValueError:
+        return {'error': 'A valid public media URL is required'}, 400
 
 
-def _start_transcode(video_url, cookie_str=None):
+def _start_transcode(video_url, cookies=None):
     """Internal: start ffmpeg transcode"""
     stream_id = uuid.uuid4().hex[:16]
     segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
@@ -979,12 +863,9 @@ def _start_transcode(video_url, cookie_str=None):
         playlist_path
     ]
     
-    env = os.environ.copy()
-    if cookie_str:
-        env['HTTP_COOKIE'] = cookie_str
     
     try:
-        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {'video_url': video_url}, env=env)
+        proc = JOB_BUDGET.start(cmd, STREAMS, stream_id, segment_dir, STREAM_DIR, {'video_url': video_url}, cookies=cookies)
         
         time.sleep(3)
         

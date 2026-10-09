@@ -15,9 +15,12 @@ import subprocess
 import threading
 import time
 import uuid
+import sys
+import isolation_runtime as runtime
 from flask import g, has_request_context, Response, send_file
 from path_security import remove_stream_directory, contained_file
 from werkzeug.exceptions import NotFound
+from cookie_security import ffmpeg_cookies
 
 
 class JobCapacityError(RuntimeError):
@@ -25,9 +28,10 @@ class JobCapacityError(RuntimeError):
 
 
 class ManagedProcess:
-    def __init__(self, process):
+    def __init__(self, process, supervised=False):
         self.process = process
         self.pid = process.pid
+        self.supervised = supervised
         self.chunks = deque()
         self.bytes = 0
         self.lock = threading.Lock()
@@ -58,7 +62,10 @@ class ManagedProcess:
             return io.BytesIO(b''.join(self.chunks))
 
     def poll(self):
-        return self.process.poll()
+        result = self.process.poll()
+        if self.supervised and result is not None and (result < 0 or result == 70):
+            runtime.fail_worker()
+        return result
 
     def stop(self):
         if self.poll() is None:
@@ -67,13 +74,15 @@ class ManagedProcess:
             else:
                 self.process.terminate()
             try:
-                self.process.wait(timeout=0.5)
+                self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 if os.name == 'posix':
                     os.killpg(self.pid, signal.SIGKILL)
                 else:
                     self.process.kill()
                 self.process.wait(timeout=2)
+                if self.supervised:
+                    runtime.fail_worker()
         if self.reader.ident is not None:
             self.reader.join(timeout=0.5)
 
@@ -144,7 +153,7 @@ class JobBudget:
             from flask import request
             if request.endpoint not in endpoints:
                 return None
-            if request.method == 'HEAD':
+            if request.method == 'HEAD' and request.endpoint not in ('browse', 'submit_form', 'search'):
                 return '', 200
             try:
                 g.video_lease = self.reserve()
@@ -177,7 +186,7 @@ class JobBudget:
                 else:
                     self.release(getattr(g, 'video_lease', None))
 
-    def start(self, command, streams, key, segment_dir, root, metadata=None, env=None):
+    def start(self, command, streams, key, segment_dir, root, metadata=None, env=None, cookies=None):
         lease = getattr(g, 'video_lease', None) if has_request_context() else None
         own_lease = lease is None
         if own_lease:
@@ -201,12 +210,15 @@ class JobBudget:
                 arguments[1:1] = ['-nostdin', '-hide_banner', '-loglevel', 'error', '-filter_threads', '1']
                 arguments[arguments.index('-i'):arguments.index('-i')] = ['-threads', '2', '-rw_timeout', '15000000']
                 arguments[-1:-1] = ['-threads', '2']
+                arguments = runtime.ffmpeg_options(arguments, cookies)
+                arguments = runtime.guarded_command(arguments, self.max_seconds)
+                supervised = len(arguments) > 1 and Path(arguments[1]).name == 'process_guard.py'
                 process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env,
                     start_new_session=os.name == 'posix',
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                 info['process'] = process
-                managed = ManagedProcess(process)
+                managed = ManagedProcess(process, supervised=supervised)
                 info['process'] = managed
                 managed.start_reader()
                 return managed

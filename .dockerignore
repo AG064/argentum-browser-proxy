@@ -1,0 +1,6 @@
+.git
+.runtime
+node_modules
+deploy/private
+__pycache__
+*.pyc

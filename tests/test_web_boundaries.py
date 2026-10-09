@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
+from fixture_guards import unit_guards
 from unittest.mock import Mock, patch
 from urllib.parse import quote, urlparse, parse_qs
 from bs4 import BeautifulSoup
@@ -24,6 +25,7 @@ def load_app(filename, directory):
 
 class WebBoundaryTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(unit_guards())
         self.directory = tempfile.TemporaryDirectory(prefix='proxy-web-tests-')
         self.module = load_app('proxy.py', self.directory.name)
         self.client = self.module.app.test_client()
@@ -61,7 +63,7 @@ class WebBoundaryTests(unittest.TestCase):
         with patch.object(self.module, 'make_request', return_value=self.response(body)):
             response = self.client.get('/browse?url=https%3A%2F%2Fsite.test%2Foriginal')
         soup = BeautifulSoup(response.data, 'html.parser')
-        target = lambda element, attribute: decode_form_target(element[attribute].split('/submit/')[1])
+        target = lambda element, attribute: decode_form_target(element[attribute].split('/submit/')[1].split('/')[0])
         self.assertEqual(target(soup.find_all('form')[1], 'action'), 'https://site.test/login?old=1')
         self.assertEqual(target(soup.find_all('form')[2], 'action'), 'https://site.test/redirected/page')
         self.assertEqual(target(soup.find('button', formaction=True), 'formaction'), 'https://site.test/forms/?override=1')

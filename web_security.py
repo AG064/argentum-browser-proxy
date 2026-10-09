@@ -12,6 +12,8 @@ def validate_http_url(value):
         parsed = urlsplit(value)
         if parsed.scheme not in ('http', 'https') or not parsed.hostname:
             raise ValueError('HTTP or HTTPS URL required')
+        if parsed.username is not None or parsed.password is not None or '\\' in parsed.netloc or '%' in parsed.netloc:
+            raise ValueError('Invalid authority')
         parsed.port
     except (ValueError, UnicodeError) as error:
         raise ValueError('Invalid HTTP or HTTPS URL') from error

@@ -1,3 +1,6 @@
+from web_security import validate_http_url
+import deployment_access
+import isolation_runtime as isolated_runtime
 from resource_limits import JOB_BUDGET
 #!/usr/bin/env python3
 """
@@ -16,6 +19,7 @@ from flask import Flask, request, Response, send_file, redirect
 from urllib.parse import unquote
 
 app = Flask(__name__)
+deployment_access.install(app)
 
 # FFmpeg settings for PS4 compatible output
 FFMPEG_HLS = [
@@ -63,7 +67,10 @@ def stream():
     if not video_url:
         return {'error': 'No URL provided'}, 400
     
-    video_url = unquote(video_url)
+    try:
+        video_url = validate_http_url(video_url)
+    except ValueError:
+        return {'error': 'A valid HTTP or HTTPS URL is required'}, 400
     stream_id = uuid.uuid4().hex[:16]
     segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     
@@ -151,7 +158,10 @@ def proxy():
     if not video_url:
         return {'error': 'No URL provided'}, 400
     
-    video_url = unquote(video_url)
+    try:
+        video_url = validate_http_url(video_url)
+    except ValueError:
+        return {'error': 'A valid HTTP or HTTPS URL is required'}, 400
     stream_id = 'direct'
     segment_dir = f"{STREAM_DIR}/{uuid.uuid4().hex}"
     

@@ -4,12 +4,14 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
+from fixture_guards import unit_guards
 from werkzeug.exceptions import NotFound
 from path_security import contained_file, remove_stream_directory
 
 
 class FileAccessTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(unit_guards())
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.stream = self.root / 'stream'

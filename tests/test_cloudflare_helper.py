@@ -5,12 +5,14 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from fixture_guards import unit_guards
 from unittest.mock import patch
 from test_web_boundaries import load_app
 
 
 class CloudflareHelperTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(unit_guards())
         self.directory = tempfile.TemporaryDirectory(prefix='proxy-helper-')
         self.root = Path(self.directory.name).resolve()
         self.install = self.root / 'trusted helper with spaces'
@@ -50,10 +52,11 @@ class CloudflareHelperTests(unittest.TestCase):
     def test_actual_javascript_resolves_the_adjacent_esm_dependency(self):
         shutil.copyfile(self.source / 'cloudflare.js', self.install / 'cloudflare.js')
         (self.install / 'package.json').write_text('{"type":"module"}', encoding='utf-8')
+        (self.install / 'browser_runtime.js').write_text('export const launchOptions=()=>({});', encoding='utf-8')
         package = self.install / 'node_modules/playwright'
         package.mkdir(parents=True)
         (package / 'package.json').write_text('{"type":"module","exports":"./index.js"}', encoding='utf-8')
-        (package / 'index.js').write_text('export const chromium={launch:async()=>({newContext:async()=>({newPage:async()=>({goto:async()=>{},waitForTimeout:async()=>{},content:async()=>"fixture",title:async()=>"fixture"}),cookies:async()=>[{name:"fixture",value:process.argv[1]}]}),close:async()=>{}})};', encoding='utf-8')
+        (package / 'index.js').write_text('export const chromium={launch:async()=>({newContext:async()=>({newPage:async()=>({goto:async()=>{},waitForTimeout:async()=>{},content:async()=>"fixture",title:async()=>"fixture",url:()=>process.argv[2]}),cookies:async()=>[{name:"fixture",value:process.argv[1]}]}),close:async()=>{}})};', encoding='utf-8')
         run = self.run_helper('https://site.test/')
         self.assertEqual(run.returncode, 0, run.stderr)
         data = json.loads(run.stdout)
@@ -63,7 +66,7 @@ class CloudflareHelperTests(unittest.TestCase):
     def test_proxy_caller_selects_the_installed_repository_helper(self):
         module = load_app('proxy.py', self.root)
         result = type('Result', (), {'returncode': 0, 'stdout': '{"success":true,"cookies":[],"user_agent":"fixture"}'})()
-        with patch.object(module.subprocess, 'run', return_value=result) as call:
+        with patch.object(module, 'run_guarded', return_value=result) as call:
             module.bypass_cloudflare('https://site.test/')
         self.assertEqual(Path(call.call_args.args[0][0]).resolve(), self.source / 'cloudflare.sh')
         self.assertEqual(call.call_args.args[0][1], 'https://site.test/')

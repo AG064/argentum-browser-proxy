@@ -12,12 +12,14 @@ import tempfile
 import time
 import types
 import unittest
+from fixture_guards import unit_guards
 from unittest.mock import patch
 import resource_limits as limits
 
 
 class JobLimitTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(unit_guards())
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.outputs = self.root / 'outputs'

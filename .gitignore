@@ -4,6 +4,7 @@ __pycache__/
 .env
 node_modules/
 .runtime/
+deploy/private/
 *.log
 cloudflare_cache/
 test-results/
